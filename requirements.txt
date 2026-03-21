@@ -1,0 +1,28 @@
+# ── Trading Bot Core & Utils ──────────────────────────────────
+MetaTrader5==5.0.45
+ccxt
+pandas
+ta
+python-dotenv
+requests
+textblob
+vaderSentiment
+yfinance
+backtrader
+numpy
+scikit-learn
+
+# ── Cloud Backend (FastAPI) ───────────────────────────────────
+fastapi
+uvicorn[standard]
+supabase
+firebase-admin
+stripe
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
+httpx
+
+# ── Scheduling & Utils ────────────────────────────────────────
+apscheduler
+

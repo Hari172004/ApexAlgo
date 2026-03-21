@@ -1,0 +1,8 @@
+{
+  "source_directories": [
+    "."
+  ],
+  "search_path": [
+    "C:/project/bot/.venv/Lib/site-packages"
+  ]
+}

@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.env
+venv/
+ENV/
+
+# Node / Mobile
+node_modules/
+dist/
+build/
+.expo/
+*.log
+
+# Databases & Models
+data/*.db
+ml/*.pkl
+data/history.db
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project specific
+data/*.db
+data/history.db
+ml/*.pkl
+logs/*.log
+*.log
+.env
+.env.local
+.env.*.local

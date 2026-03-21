@@ -1,0 +1,9 @@
+{
+    "scalping": {
+        "ema_fast": 5,
+        "ema_slow": 20,
+        "rsi_period": 14,
+        "rsi_ob": 70,
+        "rsi_os": 25
+    }
+}

@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ApexAlgo — Trade Above the Market</title>
+  <meta name="description" content="ApexAlgo is an AI-powered SaaS trading bot with prop firm support, live signals, and automated risk management." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {
+      --gold:      #F4C430;
+      --gold-dark: #C49A1A;
+      --bg:        #0A0A0F;
+      --surface:   #12121A;
+      --surface2:  #1C1C28;
+      --border:    #2A2A3A;
+      --text:      #E8E8F0;
+      --muted:     #7A7A8A;
+      --green:     #22D3A0;
+      --red:       #FF4D6A;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      min-height: 100vh;
+    }
+
+    /* ── NAV ── */
+    nav {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 1.2rem 5%;
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(12px);
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(10,10,15,0.85);
+    }
+    .logo { font-size: 1.4rem; font-weight: 800; color: var(--gold); letter-spacing: -0.5px; }
+    .logo span { color: var(--text); }
+    .nav-links { display: flex; gap: 2rem; }
+    .nav-links a { color: var(--muted); text-decoration: none; font-size: 0.9rem; transition: color 0.2s; }
+    .nav-links a:hover { color: var(--text); }
+    .nav-cta {
+      background: var(--gold); color: #0A0A0F;
+      padding: 0.6rem 1.4rem; border-radius: 8px;
+      font-weight: 700; text-decoration: none; font-size: 0.9rem;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .nav-cta:hover { transform: translateY(-2px); box-shadow: 0 6px 24px rgba(244,196,48,0.3); }
+
+    /* ── HERO ── */
+    .hero {
+      text-align: center; padding: 7rem 5% 5rem;
+      background: radial-gradient(ellipse 70% 50% at 50% 0%, rgba(244,196,48,0.08), transparent);
+    }
+    .badge {
+      display: inline-block; background: rgba(244,196,48,0.1);
+      border: 1px solid rgba(244,196,48,0.3);
+      color: var(--gold); font-size: 0.8rem; font-weight: 600;
+      padding: 0.35rem 1rem; border-radius: 50px; margin-bottom: 1.5rem;
+    }
+    .hero h1 { font-size: clamp(2.5rem, 6vw, 5rem); font-weight: 900; line-height: 1.1; margin-bottom: 1.5rem; }
+    .hero h1 .accent { color: var(--gold); }
+    .hero p { font-size: 1.1rem; color: var(--muted); max-width: 600px; margin: 0 auto 2.5rem; line-height: 1.7; }
+    .hero-btns { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+    .btn-primary {
+      background: var(--gold); color: #0A0A0F;
+      padding: 0.85rem 2rem; border-radius: 10px; font-weight: 700;
+      text-decoration: none; font-size: 1rem;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .btn-primary:hover { transform: translateY(-3px); box-shadow: 0 8px 30px rgba(244,196,48,0.35); }
+    .btn-secondary {
+      border: 1px solid var(--border); color: var(--text);
+      padding: 0.85rem 2rem; border-radius: 10px; font-weight: 600;
+      text-decoration: none; font-size: 1rem; background: transparent;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .btn-secondary:hover { border-color: var(--gold); background: rgba(244,196,48,0.05); }
+
+    /* ── STATS BAR ── */
+    .stats-bar {
+      display: flex; justify-content: center; flex-wrap: wrap; gap: 2rem;
+      padding: 2rem 5%; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .stat { text-align: center; }
+    .stat .val { font-size: 2rem; font-weight: 800; color: var(--gold); }
+    .stat .lbl { font-size: 0.8rem; color: var(--muted); margin-top: 0.2rem; }
+
+    /* ── FEATURES ── */
+    .section { padding: 5rem 5%; max-width: 1200px; margin: 0 auto; }
+    .section-title { font-size: 2rem; font-weight: 800; margin-bottom: 0.5rem; }
+    .section-sub { color: var(--muted); margin-bottom: 3rem; }
+    .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 16px; padding: 1.8rem;
+      transition: border-color 0.2s, transform 0.2s;
+    }
+    .card:hover { border-color: var(--gold); transform: translateY(-4px); }
+    .card-icon { font-size: 2rem; margin-bottom: 1rem; }
+    .card h3 { font-size: 1.1rem; font-weight: 700; margin-bottom: 0.5rem; }
+    .card p { color: var(--muted); font-size: 0.9rem; line-height: 1.6; }
+
+    /* ── PRICING ── */
+    .pricing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem; }
+    .plan {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 16px; padding: 2rem;
+    }
+    .plan.featured {
+      border-color: var(--gold);
+      background: linear-gradient(145deg, rgba(244,196,48,0.08), var(--surface));
+    }
+    .plan-name { font-size: 1rem; font-weight: 600; color: var(--muted); margin-bottom: 0.5rem; }
+    .plan-price { font-size: 2.5rem; font-weight: 900; color: var(--gold); }
+    .plan-price span { font-size: 1rem; color: var(--muted); font-weight: 400; }
+    .plan-features { list-style: none; margin: 1.5rem 0; display: flex; flex-direction: column; gap: 0.6rem; }
+    .plan-features li { color: var(--muted); font-size: 0.9rem; }
+    .plan-features li::before { content: "✓ "; color: var(--gold); font-weight: 700; }
+    .plan-btn {
+      display: block; text-align: center;
+      background: var(--gold); color: #0A0A0F;
+      padding: 0.75rem; border-radius: 10px; font-weight: 700;
+      text-decoration: none; transition: opacity 0.2s;
+    }
+    .plan-btn:hover { opacity: 0.85; }
+    .plan-btn.outline {
+      background: transparent; color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    /* ── DASHBOARD PREVIEW ── */
+    .dashboard-preview {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 20px; padding: 2rem; margin-top: 3rem;
+    }
+    .db-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+    .db-title { font-size: 1.2rem; font-weight: 700; }
+    .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--green); margin-right: 6px; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .db-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .db-stat { background: var(--surface2); border-radius: 12px; padding: 1rem; }
+    .db-stat .val { font-size: 1.4rem; font-weight: 800; }
+    .db-stat .lbl { font-size: 0.75rem; color: var(--muted); margin-top: 0.2rem; }
+    .val.green { color: var(--green); }
+    .val.red   { color: var(--red); }
+    .chart-area { height: 200px; }
+
+    /* ── PROP FIRM ── */
+    .prop-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
+    .prop-card {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 12px; padding: 1.2rem; text-align: center;
+    }
+    .prop-card .firm { font-size: 1.1rem; font-weight: 700; color: var(--gold); }
+    .prop-card .rule { font-size: 0.75rem; color: var(--muted); margin-top: 0.3rem; }
+    .progress-bar { background: var(--border); border-radius: 50px; height: 6px; margin-top: 0.8rem; overflow: hidden; }
+    .progress-fill { background: var(--gold); height: 100%; border-radius: 50px; width: 62%; }
+
+    /* ── FOOTER ── */
+    footer {
+      border-top: 1px solid var(--border); padding: 2rem 5%;
+      text-align: center; color: var(--muted); font-size: 0.85rem;
+    }
+    footer a { color: var(--gold); text-decoration: none; }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="logo">Ante<span>gravity</span></div>
+  <div class="nav-links">
+    <a href="#features">Features</a>
+    <a href="#prop-firm">Prop Firms</a>
+    <a href="#pricing">Pricing</a>
+    <a href="#dashboard">Dashboard</a>
+  </div>
+  <a href="#pricing" class="nav-cta">Get Started Free</a>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="badge">🚀 AI-Powered Trading Bot — Prop Firm Ready</div>
+  <h1>Trade <span class="accent">Above</span><br/>the Market.</h1>
+  <p>ApexAlgo runs 24/7 on XAUUSD and Bitcoin. Scalping + Swing strategies built-in. FTMO, MFF, The5ers funded account mode. Fully automated. No manual input.</p>
+  <div class="hero-btns">
+    <a href="#pricing" class="btn-primary">Start Free Trial →</a>
+    <a href="#dashboard" class="btn-secondary">See Live Dashboard</a>
+  </div>
+</section>
+
+<!-- STATS BAR -->
+<div class="stats-bar">
+  <div class="stat"><div class="val">68%</div><div class="lbl">Average Win Rate</div></div>
+  <div class="stat"><div class="val">2.3x</div><div class="lbl">Profit Factor</div></div>
+  <div class="stat"><div class="val">&lt;5%</div><div class="lbl">Max Drawdown</div></div>
+  <div class="stat"><div class="val">24/7</div><div class="lbl">Global Uptime</div></div>
+  <div class="stat"><div class="val">5</div><div class="lbl">Prop Firms Supported</div></div>
+</div>
+
+<!-- FEATURES -->
+<div class="section" id="features">
+  <div class="section-title">Everything you need to trade smarter</div>
+  <div class="section-sub">Two strategies, three modes, all running automatically around the clock.</div>
+  <div class="grid-3">
+    <div class="card"><div class="card-icon">⚡</div><h3>Scalping Strategy</h3><p>Fast 1m/5m trades using RSI, EMA crossover, Bollinger Bands, and MACD. Captures quick momentum moves.</p></div>
+    <div class="card"><div class="card-icon">📈</div><h3>Swing Strategy</h3><p>1H/4H/Daily trades using trend direction, support/resistance zones, and ATR. Rides the bigger moves.</p></div>
+    <div class="card"><div class="card-icon">🧠</div><h3>AI Signal Engine</h3><p>Blends technical signals with live news sentiment (VADER + TextBlob) for higher-quality entries.</p></div>
+    <div class="card"><div class="card-icon">🏦</div><h3>Prop Firm Mode</h3><p>FTMO, MyForexFunds, The5ers, Apex, TrueForex — automatic rule enforcement for every phase.</p></div>
+    <div class="card"><div class="card-icon">🛡️</div><h3>Smart Risk Engine</h3><p>Max 2% per trade, ATR-based SL/TP, breakeven at 1R, 3-consecutive-loss auto-stop.</p></div>
+    <div class="card"><div class="card-icon">📱</div><h3>Android App</h3><p>Switch modes, monitor PnL, receive push notifications, and control your bot from anywhere.</p></div>
+  </div>
+</div>
+
+<!-- PROP FIRM -->
+<div class="section" id="prop-firm">
+  <div class="section-title">Built for Funded Account Traders</div>
+  <div class="section-sub">The bot auto-enforces firm-specific rules — so you never accidentally breach a limit.</div>
+  <div class="prop-grid">
+    <div class="prop-card"><div class="firm">FTMO</div><div class="rule">5% Daily / 10% Total DD</div><div class="progress-bar"><div class="progress-fill" style="width:62%"></div></div><div class="rule" style="margin-top:0.4rem">62% Toward Target</div></div>
+    <div class="prop-card"><div class="firm">MyForexFunds</div><div class="rule">5% Daily / 12% Total DD</div><div class="progress-bar"><div class="progress-fill" style="width:45%"></div></div><div class="rule" style="margin-top:0.4rem">45% Toward Target</div></div>
+    <div class="prop-card"><div class="firm">The5ers</div><div class="rule">4% Daily / 6% Total DD</div><div class="progress-bar"><div class="progress-fill" style="width:78%"></div></div><div class="rule" style="margin-top:0.4rem">78% Toward Target</div></div>
+    <div class="prop-card"><div class="firm">Apex</div><div class="rule">3% Daily / 6% Total DD</div><div class="progress-bar"><div class="progress-fill" style="width:55%"></div></div><div class="rule" style="margin-top:0.4rem">55% Toward Target</div></div>
+    <div class="prop-card"><div class="firm">TrueForex</div><div class="rule">5% Daily / 10% Total DD</div><div class="progress-bar"><div class="progress-fill" style="width:30%"></div></div><div class="rule" style="margin-top:0.4rem">30% Toward Target</div></div>
+  </div>
+</div>
+
+<!-- LIVE DASHBOARD PREVIEW -->
+<div class="section" id="dashboard">
+  <div class="section-title">Live Dashboard</div>
+  <div class="section-sub">Track every trade in real time from web or mobile.</div>
+  <div class="dashboard-preview">
+    <div class="db-header">
+      <div class="db-title"><span class="status-dot"></span>Bot Running — FUNDED Mode</div>
+      <div style="color:var(--muted);font-size:0.85rem">FTMO Challenge · Phase 1</div>
+    </div>
+    <div class="db-grid">
+      <div class="db-stat"><div class="val green">$10,842</div><div class="lbl">Balance</div></div>
+      <div class="db-stat"><div class="val green">+$842</div><div class="lbl">Total Profit</div></div>
+      <div class="db-stat"><div class="val">+$124</div><div class="lbl">Today PnL</div></div>
+      <div class="db-stat"><div class="val">68%</div><div class="lbl">Win Rate</div></div>
+      <div class="db-stat"><div class="val" style="color:var(--gold)">8.4%</div><div class="lbl">Profit Progress</div></div>
+      <div class="db-stat"><div class="val">1.2%</div><div class="lbl">DD Used</div></div>
+    </div>
+    <div class="chart-area">
+      <canvas id="equityChart"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- PRICING -->
+<div class="section" id="pricing">
+  <div class="section-title">Simple Pricing. Cancel Anytime.</div>
+  <div class="section-sub">Start with Demo mode — no payment needed. Upgrade when you're ready.</div>
+  <div class="pricing-grid">
+    <div class="plan">
+      <div class="plan-name">Starter</div>
+      <div class="plan-price">$29<span>/month</span></div>
+      <ul class="plan-features">
+        <li>Demo + Real mode</li>
+        <li>XAUUSD trading only</li>
+        <li>Scalping + Swing</li>
+        <li>Telegram alerts</li>
+        <li>Basic dashboard</li>
+      </ul>
+      <a href="#" class="plan-btn outline" id="btn-starter">Get Starter</a>
+    </div>
+    <div class="plan featured">
+      <div class="plan-name">Pro ⭐ Most Popular</div>
+      <div class="plan-price">$59<span>/month</span></div>
+      <ul class="plan-features">
+        <li>Demo + Real + <strong>Funded mode</strong></li>
+        <li>XAUUSD + Bitcoin</li>
+        <li>All 5 prop firms</li>
+        <li>Phase 1 + 2 support</li>
+        <li>Android app access</li>
+        <li>Telegram + Email alerts</li>
+      </ul>
+      <a href="#" class="plan-btn" id="btn-pro">Get Pro</a>
+    </div>
+    <div class="plan">
+      <div class="plan-name">Elite</div>
+      <div class="plan-price">$99<span>/month</span></div>
+      <ul class="plan-features">
+        <li>Everything in Pro</li>
+        <li>Priority signals</li>
+        <li>Custom prop firm rules</li>
+        <li>Live funded protection</li>
+        <li>Admin dashboard</li>
+        <li>1-on-1 onboarding</li>
+      </ul>
+      <a href="#" class="plan-btn outline" id="btn-elite">Get Elite</a>
+    </div>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <p>© 2026 ApexAlgo. All rights reserved. | <a href="#">Terms</a> · <a href="#">Privacy</a></p>
+  <p style="margin-top:0.5rem; font-size:0.75rem;">Trading involves risk. Past performance does not guarantee future results. Use funded mode only after extensive demo testing.</p>
+</footer>
+
+<script>
+  // Equity chart
+  const ctx = document.getElementById('equityChart').getContext('2d');
+  const labels = Array.from({length: 30}, (_, i) => `Day ${i+1}`);
+  const data   = [10000, 10050, 9980, 10120, 10200, 10150, 10310, 10280, 10390, 10370,
+                  10480, 10510, 10440, 10590, 10620, 10580, 10700, 10750, 10680, 10810,
+                  10770, 10840, 10790, 10890, 10920, 10860, 10940, 10990, 10910, 10842];
+
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Equity ($)',
+        data,
+        borderColor: '#F4C430',
+        backgroundColor: 'rgba(244,196,48,0.08)',
+        borderWidth: 2,
+        fill: true,
+        tension: 0.4,
+        pointRadius: 0,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { display: false },
+        y: {
+          grid: { color: 'rgba(255,255,255,0.04)' },
+          ticks: { color: '#7A7A8A', font: { size: 11 } }
+        }
+      }
+    }
+  });
+
+  // Pricing buttons — replace with actual Stripe checkout URL from your API
+  document.getElementById('btn-starter').addEventListener('click', () => alert('Redirecting to Starter checkout...'));
+  document.getElementById('btn-pro').addEventListener('click', ()     => alert('Redirecting to Pro checkout...'));
+  document.getElementById('btn-elite').addEventListener('click', ()   => alert('Redirecting to Elite checkout...'));
+</script>
+</body>
+</html>

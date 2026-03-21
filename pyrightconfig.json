@@ -1,0 +1,12 @@
+{
+  "pythonVersion": "3.9",
+  "pythonPlatform": "Windows",
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": [
+    "."
+  ],
+  "typeCheckingMode": "basic",
+  "reportMissingModuleSource": "none",
+  "reportMissingImports": "none"
+}
