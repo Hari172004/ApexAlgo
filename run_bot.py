@@ -21,7 +21,7 @@ if __name__ == "__main__":
     
     selected_assets = "BOTH"
     if choice == "1":
-        selected_assets = "XAUUSD"
+        selected_assets = "XAUUSD"  # Will be mapped to GAUUSD in core.py
     elif choice == "2":
         selected_assets = "BTCUSD"
     else:

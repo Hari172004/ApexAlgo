@@ -125,6 +125,13 @@ class AgniVBot:
     """
 
     def __init__(self, config: BotConfig):
+        # ── Asset Mapping (Standardise Input) ───────────────
+        # Ensure 'XAUUSD' input maps to the actual broker symbol (GAUUSD)
+        if config.assets == "XAUUSD":
+            config.assets = ASSETS_XAUUSD
+        elif config.assets == "BTCUSD":
+            config.assets = ASSETS_BTC
+
         self.config   = config
         self._running = False
         self._lock    = threading.Lock()
