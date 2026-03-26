@@ -474,8 +474,15 @@ class AgniVBot:
                                    entry=entry, sl=sl, tp=tp)
 
         # 8. Place trade
+        news_boosted = False
+        if sent_label != "NEUTRAL":
+            if (tech_signal == "BUY" and sent_label == "BULLISH") or (tech_signal == "SELL" and sent_label == "BEARISH"):
+                news_boosted = True
+                logger.info(f"[Core] 🚀 News momentum alignment detected for {symbol}. Boosting TP.")
+
         trade = self._place_trade(symbol, final_signal, volume, entry, sl, tp,
-                                  strategy=strategy_mode, sentiment=sent_label)
+                                  strategy=strategy_mode, sentiment=sent_label,
+                                  news_boosted=news_boosted)
         if trade and "error" not in trade:
             self.alerts.trade_opened(
                 {**trade, "strategy": strategy_mode, "mode": self.config.mode},
@@ -661,11 +668,18 @@ class AgniVBot:
                 symbol, direction, volume, entry, sl, tp, comment="agniv_demo"
             )
         elif self.config.mode in (MODE_REAL, MODE_FUNDED):
-            result = self.mt5.place_market_order(symbol, direction, volume, sl, tp)
+            # Apply News Boost to TP if flagged
+            final_tp = tp
+            if news_boosted:
+                risk_dist = abs(entry - sl)
+                final_tp = entry + (3.0 * risk_dist) if direction == "BUY" else entry - (3.0 * risk_dist)
+            
+            result = self.mt5.place_market_order(symbol, direction, volume, sl, final_tp)
             if "ticket" in result:
                 self._real_positions[result["ticket"]] = {
-                    "sl": sl, "initial_sl": sl, "tp": tp, "entry": entry, "direction": direction,
-                    "symbol": symbol, "strategy": strategy
+                    "sl": sl, "initial_sl": sl, "tp": final_tp, "entry": entry, "direction": direction,
+                    "symbol": symbol, "strategy": strategy,
+                    "entry_time": time.time(), "partial_closed": False
                 }
         else:
             result = {}
@@ -710,23 +724,49 @@ class AgniVBot:
             tick = self.mt5.get_tick(meta["symbol"])
             if not tick:
                 continue
-            current = tick["bid"] if meta["direction"] == "BUY" else tick["ask"]
+            # ── [NEW] Agni-V Pulse Guard Logic ───────────────────
+            entry_time = meta.get("entry_time", time.time())
+            time_elapsed = time.time() - entry_time
+            is_scalp = meta.get("strategy") == STRATEGY_SCALP
             
-            # Use the trailing stop logic with 0.5R breakeven for scalps
-            be_threshold = 0.5 if meta.get("strategy") == STRATEGY_SCALP else None
+            # 1. Time-Based Exit (TBE): If scalp is open > 20 mins, close remainder
+            if is_scalp and time_elapsed > 1200:
+                logger.info(f"[Core] ⏱️ TBE: Scalp ticket #{ticket} open > 20 mins. Closing.")
+                self.mt5.close_position(ticket)
+                continue
+
+            # 2. Risk Mgmt Trailing SL
+            be_threshold = 0.5 if is_scalp else None
             should_move, new_sl = self.risk_mgr.should_update_sl(
                 meta["entry"], current, meta["sl"], meta.get("initial_sl", meta["sl"]), meta["direction"],
                 override_breakeven_r=be_threshold
             )
             
+            # 3. Partial Profit Taking (PPT): At 1.0R, close 50% & move to BE
+            initial_risk = abs(meta["entry"] - meta.get("initial_sl", meta["sl"]))
+            profit_r = abs(current - meta["entry"]) / initial_risk if initial_risk > 0 else 0
+            
+            if is_scalp and profit_r >= 1.0 and not meta.get("partial_closed"):
+                # Move to BE first
+                move_ok = self.mt5.modify_sl_tp(ticket, meta["entry"], meta["tp"])
+                # Then close 50%
+                pos = self.mt5.positions_get(ticket=ticket)
+                if pos and len(pos) > 0:
+                    half_vol = round(pos[0].volume / 2.0, 2)
+                    if half_vol >= 0.01:
+                        close_ok = self.mt5.close_position(ticket, volume=half_vol)
+                        if close_ok:
+                            meta["partial_closed"] = True
+                            meta["sl"] = meta["entry"]
+                            logger.info(f"[Core] 💰 PPT: Closed 50% of scalp ticket #{ticket} at 1.0R.")
+                continue
+
+            # Standard trailing if not already handled by PPT
             if should_move and new_sl != meta["sl"]:
                 ok = self.mt5.modify_sl_tp(ticket, new_sl, meta["tp"])
                 if ok:
                     self._real_positions[ticket]["sl"] = new_sl
                     logger.info(f"[Core] 🔒 Trailing SL moved | Ticket={ticket} | NewSL={new_sl}")
-                    # self.alerts.send_telegram(
-                    #     f"🔒 *Trailing SL Updated* on ticket #{ticket} — SL moved to {new_sl} to lock in profit."
-                    # )
 
     # ── Helpers ───────────────────────────────────────────────
 

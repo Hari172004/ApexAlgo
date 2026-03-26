@@ -153,24 +153,31 @@ class MT5Connector:
         logger.info(f"✅ Order | {direction} {volume} {symbol} @ {price:.5f} | Ticket#{result.order}")
         return {"ticket": result.order, "price": price, "volume": volume, "direction": direction}
 
-    def close_position(self, ticket: int) -> bool:
+    def close_position(self, ticket: int, volume: float = None) -> bool:
         pos = mt5.positions_get(ticket=ticket)  # type: ignore
         if not pos:
             return False
         p = pos[0]
+        
+        # If volume not specified, close full position
+        close_vol = volume if volume is not None else p.volume
+        # Clamp to available volume
+        close_vol = min(close_vol, p.volume)
+        
         close_type = mt5.ORDER_TYPE_SELL if p.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
         tick = mt5.symbol_info_tick(p.symbol)  # type: ignore
         close_price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
+        
         result = mt5.order_send({  # type: ignore
             "action":       mt5.TRADE_ACTION_DEAL,
             "symbol":       p.symbol,
-            "volume":       p.volume,
+            "volume":       float(close_vol),
             "type":         close_type,
             "position":     ticket,
             "price":        close_price,
             "deviation":    20,
             "magic":        202601,
-            "comment":      "ag_close",
+            "comment":      "ag_close_partial" if volume else "ag_close_full",
             "type_time":    mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         })

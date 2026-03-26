@@ -113,11 +113,24 @@ class GoldRiskManager:
         # (actual comparison done against rolling avg ATR passed from caller if needed)
         atr_mult  = 0.30 if atr_spike else 1.0
 
-        # 8. Funded mode — more conservative
+        # 8. Dynamic Session Risk (DSR)
+        # London/NY Overlap (12:00-16:00 UTC) is the "Vol Zone"
+        now_hour = datetime.now(timezone.utc).hour
+        is_vol_zone = 12 <= now_hour <= 16
+        is_asian    = 22 <= now_hour or now_hour <= 8
+        
+        session_mult = 1.25 if is_vol_zone else (0.25 if is_asian else 1.0)
+        
+        # 9. Funded mode — more conservative
         risk_pct = FUNDED_MAX_RISK_PCT if self.funded else MAX_RISK_PCT
-        risk_pct *= btc_risk_penalty
+        risk_pct *= btc_risk_penalty * session_mult
+        
+        if is_asian:
+            logger.info(f"[GoldRisk] Asian Session: Risk reduced by 75% ({risk_pct:.2f}%)")
+        elif is_vol_zone:
+            logger.info(f"[GoldRisk] Vol Zone (London/NY Overlap): Risk boosted by 25% ({risk_pct:.2f}%)")
 
-        # 9. Calculate lot size
+        # 10. Calculate lot size
         risk_usd = balance * (risk_pct / 100) * atr_mult
         sl_val   = max(float(atr) * 1.5, MIN_SL_POINTS)
 
@@ -138,6 +151,7 @@ class GoldRiskManager:
             "sl_value":  sl_val,
             "risk_usd":  risk_usd,
             "risk_pct":  risk_pct,
+            "is_vol_zone": is_vol_zone
         }
 
     # ── Consistency checks (funded) ───────────────────────────────────────
