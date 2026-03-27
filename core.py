@@ -244,21 +244,33 @@ class AgniVBot:
         """Stops the bot and disconnects all components."""
         self._running = False
         
-        # Safe disconnect for components that might not have been initialized
-        if hasattr(self, 'btc_binance'): self.btc_binance.stop()
-        if hasattr(self, 'btc_bybit'):   self.btc_bybit.stop()
+        # ── Safe Disconnect for All Components ───────────────────
+        # Use getattr(self, 'attr', None) to avoid AttributeErrors if startup failed 
+        # or if specific assets (BTC/Gold) weren't initialized.
+        components_to_stop = [
+            'btc_binance', 'btc_bybit', 'ccxt', 'mt5'
+        ]
         
-        if self.mt5:
-            self.mt5.disconnect()
-            
+        for comp_name in components_to_stop:
+            comp = getattr(self, comp_name, None)
+            if comp:
+                try:
+                    if hasattr(comp, 'stop'):
+                        comp.stop()
+                    elif hasattr(comp, 'disconnect'):
+                        comp.disconnect()
+                except Exception as e:
+                    logger.debug(f"[Core] Error stopping {comp_name}: {e}")
+
         # 2. Notify user bot is OFF (Low Priority, don't block)
         def _silent_notify():
             try:
-                self.alerts.send_telegram("🔴 <b>Agni-V Bot OFFLINE</b>\nBot shutting down safely. 👋", timeout=2)
+                # Use timeout to prevent hanging on shutdown if network is unstable
+                self.alerts.send_telegram("🔴 <b>Agni-V Bot OFFLINE</b>\nBot shutting down safely. 👋", timeout=3)
             except:
                 pass
         
-        threading.Thread(target=_silent_notify).start()
+        threading.Thread(target=_silent_notify, daemon=True).start()
         logger.info("[Core] Bot stopped.")
 
     # ── Mode Setup ────────────────────────────────────────────

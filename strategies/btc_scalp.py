@@ -14,6 +14,12 @@ import pandas as pd # type: ignore
 from analysis.btc_indicators import BTCIndicators # type: ignore
 from analysis.btc_market_structure import BTCMarketStructure # type: ignore
 
+try:
+    from rl.ppo_agent import PPOAgent  # type: ignore
+    _PPO_AVAILABLE = True
+except ImportError:
+    _PPO_AVAILABLE = False
+
 logger = logging.getLogger("agniv.btc_scalp")
 
 class BTCScalpStrategy:
@@ -21,6 +27,8 @@ class BTCScalpStrategy:
 
     def __init__(self, risk_reward: float = 2.0):
         self.risk_reward = risk_reward
+        # PPO Reinforcement Learning agent (lazy-loaded)
+        self._ppo: "PPOAgent | None" = PPOAgent("BTCUSD") if _PPO_AVAILABLE else None  # type: ignore
 
     def generate_signal(self, df: pd.DataFrame, df_h1: pd.DataFrame = None, 
                         is_nano: bool = False, ignore_sessions: bool = False, is_sniper: bool = False) -> dict:
@@ -166,6 +174,39 @@ class BTCScalpStrategy:
             sl = live_close_val - (1.6 * atr) if signal == "BUY" else live_close_val + (1.6 * atr)
             tp = live_close_val + (self.risk_reward * 1.6 * atr) if signal == "BUY" else live_close_val - (self.risk_reward * 1.6 * atr)
 
+            # ── PPO Confirmation Filter ───────────────────────────
+            if self._ppo is not None and self._ppo.is_available():
+                ema9_val  = float(row.get("ema_9",  0))
+                ema21_val = float(row.get("ema_21", 0))
+                atr_raw   = float(row.get("atr", 1))
+                obs_dict  = {
+                    "rsi":            rsi / 100.0,
+                    "ema_diff_pct":   (ema9_val - ema21_val) / (live_close_val + 1e-9),
+                    "atr_norm":       atr_raw / (live_close_val + 1e-9),
+                    "rvol":           min(rvol, 5.0),
+                    "macd_hist_norm": 0.0,
+                    "bb_pct":         0.5,
+                    "ha_bull":        1.0 if ha_bull else 0.0,
+                    "h1_trend":       1.0 if h1_bullish else 0.0,
+                    "session_id":     0.5,
+                    "close_norm":     0.0,
+                }
+                ppo_result = self._ppo.predict(obs_dict)
+                ppo_action = ppo_result.get("action", "HOLD")
+                ppo_conf   = ppo_result.get("confidence", 1.0)
+
+                if ppo_action == signal:
+                    strength = min(strength + 0.10, 1.0)
+                    reasons.append(f"PPO:Confirm({ppo_conf:.0%})")
+                elif ppo_action == "HOLD":
+                    strength = max(strength - 0.10, 0.0)
+                    reasons.append("PPO:Uncertain")
+                else:
+                    strength = max(strength - 0.30, 0.0)
+                    reasons.append(f"PPO:Disagree({ppo_action})")
+                    if strength < 0.60:
+                        return {**empty, "reason": "PPO Override: " + ", ".join(reasons)}
+
             return {
                 "signal":   signal,
                 "strength": float(round(float(min(strength, 1.0)), 3)),
@@ -178,3 +219,4 @@ class BTCScalpStrategy:
             }
 
         return {**empty, "reason": "BTC Searching: " + (", ".join(hold_reasons) if hold_reasons else "No Setup")}
+

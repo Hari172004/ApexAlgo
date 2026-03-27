@@ -11,6 +11,12 @@ from analysis.gold_indicators import calculate_gold_indicators # type: ignore
 from analysis.gold_market_structure import detect_gold_smc, near_ob, near_fvg # type: ignore
 from analysis.gold_sessions import is_gold_scalp_time, get_current_gold_session # type: ignore
 
+try:
+    from rl.ppo_agent import PPOAgent  # type: ignore
+    _PPO_AVAILABLE = True
+except ImportError:
+    _PPO_AVAILABLE = False
+
 logger = logging.getLogger("agniv.gold_scalp")
 
 MAX_SCALPS_PER_SESSION = 5
@@ -20,6 +26,8 @@ class GoldScalpStrategy:
     def __init__(self):
         self.name = "GoldScalp"
         self._session_trades: dict = {}   # session_key → trade count
+        # PPO Reinforcement Learning agent (lazy-loaded)
+        self._ppo: "PPOAgent | None" = PPOAgent("XAUUSD") if _PPO_AVAILABLE else None  # type: ignore
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -174,7 +182,44 @@ class GoldScalpStrategy:
         if signal != "HOLD":
             sl_dist = max(atr * 1.5, 1.0)
             tp_dist = sl_dist * 2.0
-            
+
+            # ── PPO Confirmation Filter ───────────────────────────
+            if self._ppo is not None and self._ppo.is_available():
+                ema9_val   = float(last.get("ema_9", 0))
+                ema21_val  = float(last.get("ema_21", 0))
+                atr_raw    = float(last.get("atr", 1))
+                close_norm = 0.0  # fallback (env handles normalisation at train time)
+                obs_dict = {
+                    "rsi":            rsi / 100.0,
+                    "ema_diff_pct":   (ema9_val - ema21_val) / (live_close_val + 1e-9),
+                    "atr_norm":       atr_raw / (live_close_val + 1e-9),
+                    "rvol":           min(rvol, 5.0),
+                    "macd_hist_norm": 0.0,
+                    "bb_pct":         0.5,
+                    "ha_bull":        1.0 if bool(last.get("ha_bull", True)) else 0.0,
+                    "h1_trend":       1.0 if h1_bullish else 0.0,
+                    "session_id":     0.5,
+                    "close_norm":     close_norm,
+                }
+                ppo_result  = self._ppo.predict(obs_dict)
+                ppo_action  = ppo_result.get("action", "HOLD")
+                ppo_conf    = ppo_result.get("confidence", 1.0)
+
+                if ppo_action == signal:
+                    # PPO agrees — reinforce the signal
+                    strength = min(strength + 0.10, 1.0)
+                    reasons.append(f"PPO:Confirm({ppo_conf:.0%})")
+                elif ppo_action == "HOLD":
+                    # PPO uncertain — mild penalty
+                    strength = max(strength - 0.10, 0.0)
+                    reasons.append("PPO:Uncertain")
+                else:
+                    # PPO disagrees — significant penalty; suppress weak trades
+                    strength = max(strength - 0.30, 0.0)
+                    reasons.append(f"PPO:Disagree({ppo_action})")
+                    if strength < 0.60:
+                        return {**empty, "reason": "PPO Override: " + ", ".join(reasons)}
+
             return {
                 "signal":      signal,
                 "strength":    float(round(float(min(strength, 1.0)), 3)),

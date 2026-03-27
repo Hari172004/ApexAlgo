@@ -9,7 +9,7 @@ import logging
 import pickle
 import pandas as pd # type: ignore
 from typing import Dict, Any, Tuple
-from sklearn.ensemble import RandomForestClassifier # type: ignore
+import xgboost as xgb # type: ignore
 from sklearn.model_selection import train_test_split # type: ignore
 from sklearn.metrics import accuracy_score # type: ignore
 
@@ -30,13 +30,13 @@ class SignalClassifier:
             "session_id", "news_score", "spread", "mtf_confluence"
         ]
 
-    def _load_model(self) -> RandomForestClassifier:
+    def _load_model(self) -> xgb.XGBClassifier:
         """Loads a pretrained pickle model off disk if it exists."""
         if os.path.exists(self.model_path):
             try:
                 with open(self.model_path, 'rb') as f:
                     model = pickle.load(f)
-                    logger.info("[ML] Random Forest model loaded from disk.")
+                    logger.info("[ML] XGBoost model loaded from disk.")
                     return model
             except Exception as e:
                 logger.error(f"[ML] Failed to load model: {e}")
@@ -62,22 +62,28 @@ class SignalClassifier:
 
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        # Initialize optimal params for trading signals
-        clf = RandomForestClassifier(
-            n_estimators=200, 
-            max_depth=10, 
-            min_samples_split=5, 
+        # Initialize optimal params for XGBoost trading signals
+        clf = xgb.XGBClassifier(
+            n_estimators=300, 
+            learning_rate=0.05,
+            max_depth=6, 
+            subsample=0.8,
+            colsample_bytree=0.8,
             random_state=42,
-            n_jobs=-1
+            n_jobs=-1,
+            early_stopping_rounds=20,
+            eval_metric="logloss"
         )
         
-        logger.info("[ML] Starting Random Forest training...")
-        clf.fit(X_train, y_train)
+        logger.info("[ML] Starting XGBoost training with early stopping...")
+        clf.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
 
-        # Cross Validation Evaluation
+        # Cross Validation Evaluation using the best iteration
         predictions = clf.predict(X_test)
         accuracy = accuracy_score(y_test, predictions)
-        logger.info(f"[ML] Training Complete. Test Accuracy: {accuracy*100:.2f}%")
+        
+        best_iteration = clf.best_iteration
+        logger.info(f"[ML] Training Complete at iteration {best_iteration}. Test Accuracy: {accuracy*100:.2f}%")
 
         if accuracy < 0.68:
             logger.warning("[ML] Model failed minimum 68% accuracy threshold. Discarding model.")
@@ -88,7 +94,7 @@ class SignalClassifier:
             pickle.dump(clf, f)
             
         self.model = clf
-        logger.info("[ML] New model achieved >68% accuracy and has been saved to disk.")
+        logger.info("[ML] New XGBoost model achieved >68% accuracy and has been saved to disk.")
         return True, accuracy
 
     def predict_signal(self, current_features: Dict[str, float]) -> Dict[str, Any]:
