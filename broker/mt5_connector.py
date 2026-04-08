@@ -32,7 +32,8 @@ class MT5Connector:
 
     def connect(self, account: int, password: str, server: str) -> bool:
         if not mt5.initialize():  # type: ignore
-            logger.error("MT5 initialize() failed. Is MetaTrader 5 running?")
+            err = mt5.last_error()
+            logger.error(f"MT5 initialize() failed. Is MetaTrader 5 running? Error: {err}")
             return False
         if not mt5.login(account, password=password, server=server):  # type: ignore
             logger.error(f"MT5 login failed: {mt5.last_error()}")  # type: ignore
@@ -53,7 +54,7 @@ class MT5Connector:
         if not all_symbols:
             return
 
-        gold_candidates = ["GAUUSD", "XAUUSD", "GOLD", "XAUUSD.a", "XAUUSDm", "XAUUSD.r", "XAUUSD.pro"]
+        gold_candidates = ["GOLD", "gold", "XAUUSD", "XAUUSDm", "GAUUSD", "XAUUSD.a", "XAUUSD.r", "XAUUSD.pro"]
         btc_candidates  = ["BTCUSD", "BTCUSDT", "BITCOIN", "BTCUSD.a", "BTCUSDm", "BTCUSD.pro"]
 
         available_names = [s.name.upper() for s in all_symbols]
@@ -116,6 +117,10 @@ class MT5Connector:
         mt5_symbol = self.map_symbol(symbol) if symbol else None
         positions = mt5.positions_get(symbol=mt5_symbol) if mt5_symbol else mt5.positions_get()  # type: ignore
         return [p._asdict() for p in positions] if positions else []
+
+    def positions_get(self, **kwargs):
+        """Standard MT5 positions_get wrapper returning raw objects."""
+        return mt5.positions_get(**kwargs)
 
     def map_symbol(self, symbol: str) -> str:
         """Returns the broker-specific symbol name (e.g. 'GOLD' for 'XAUUSD')."""

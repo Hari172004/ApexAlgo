@@ -1,16 +1,15 @@
 """
-core.py — Agni-V Main Bot Engine
-======================================
-This is the central orchestrator. It:
-  - Manages three trading modes: Demo, Real, Funded
-  - Runs both Scalping and Swing strategies simultaneously
-  - Blends technical signals with news sentiment
-  - Enforces risk and prop firm rules before every trade
-  - Logs and alerts on every event
-  - Handles breakeven management and daily resets
+core.py — Agni-V Gold Bot Engine (XAUUSD Only)
+================================================
+Gold-only professional trading engine:
+  - Supports $10 micro-accounts (standard accounts with leverage)
+  - Anti-martingale compounding: lot size grows with balance
+  - Pyramid orders: up to 5 simultaneous trades on strong signals
+  - DIY Custom Strategy Builder (ZP v1) as primary signal engine
+  - Both Scalp (M5) and Swing (H4) modes with configurable filters
 
 Usage:
-    from core import AgniVBot
+    from core import AgniVBot, BotConfig
     bot = AgniVBot(config)
     bot.start()
 """
@@ -21,11 +20,19 @@ import logging
 import threading
 import winsound
 from datetime import datetime, date
-from typing import cast
+from typing import cast, List, Deque
+from collections import deque
 from dotenv import load_dotenv # type: ignore
 
+from rich.console import Console
+from rich.table import Table
+from rich import box
+from rich.live import Live
+from rich.layout import Layout
+from rich.panel import Panel
+from rich.text import Text
+
 from broker.mt5_connector  import MT5Connector # type: ignore
-from broker.ccxt_connector import CCXTConnector # type: ignore
 from strategies.scalping   import ScalpingStrategy # type: ignore
 from strategies.swing      import SwingStrategy # type: ignore
 from news_reader           import NewsReader # type: ignore
@@ -37,21 +44,16 @@ from history_store         import HistoryStore # type: ignore
 from backend.correlation   import CorrelationEngine # type: ignore
 from strategies.smc        import SMCEngine # type: ignore
 from ml.signal_classifier import SignalClassifier # type: ignore
+from trade_journal         import TradeJournal # type: ignore
 
-# ── BTC Modules ──────────────────────────────────────
-from broker.binance_connector import BinanceConnector # type: ignore
-from broker.bybit_connector   import BybitConnector   # type: ignore
-from strategies.btc_scalp      import BTCScalpStrategy # type: ignore
-from strategies.btc_swing      import BTCSwingStrategy # type: ignore
-from btc_risk_manager          import BTCRiskManager   # type: ignore
-from alerts.btc_alerts         import BTCAlerts        # type: ignore
-
-# ── Gold Modules ─────────────────────────────────────
-from strategies.gold_scalp      import GoldScalpStrategy # type: ignore
-from strategies.gold_swing      import GoldSwingStrategy # type: ignore
-from gold_risk_manager          import GoldRiskManager    # type: ignore
-from alerts.gold_alerts         import GoldAlerts         # type: ignore
-from analysis.gold_sessions     import get_current_gold_session # type: ignore
+# ── Gold Modules ─────────────────────────────────────────────────────────
+from strategies.gold_scalp         import GoldScalpStrategy # type: ignore
+from strategies.gold_swing         import GoldSwingStrategy # type: ignore
+from gold_risk_manager             import GoldRiskManager    # type: ignore
+from alerts.gold_alerts            import GoldAlerts         # type: ignore
+from analysis.gold_sessions        import get_current_gold_session # type: ignore
+from strategies.diy_custom_builder import DIYCustomStrategy  # type: ignore
+from filters.world_monitor         import WorldMonitorAPI    # type: ignore
 
 load_dotenv(override=True)
 
@@ -63,54 +65,72 @@ logging.basicConfig(
     format="%(asctime)s  %(levelname)-8s  %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("agniv_bot.log", encoding="utf-8"),
+        # StreamHandler removed to prevent UI flickering on dashboard
+        # NOTE: File logging is handled by run_bot.py via setup_file_logging().
     ],
 )
 logger = logging.getLogger("agniv.core")
 
+class DashboardLogHandler(logging.Handler):
+    """Custom logging handler that keeps the last N lines for the dashboard."""
+    def __init__(self, capacity: int = 10):
+        super().__init__()
+        self.logs: Deque[str] = deque(maxlen=capacity)
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            # Remove timestamp part if it's too long for the dashboard
+            if "|" in msg:
+                msg = msg.split("|", 1)[1].strip()
+            self.logs.append(msg)
+        except Exception:
+            self.handleError(record)
+
+dashboard_logs = DashboardLogHandler(capacity=10)
+dashboard_logs.setFormatter(logging.Formatter("%(message)s"))
+logging.getLogger("agniv").addHandler(dashboard_logs)
+
 # ──────────────────────────────────────────────────────────────
 # Mode constants
 # ──────────────────────────────────────────────────────────────
+# ── Mode constants ────────────────────────────────────────────────────────────
 MODE_DEMO   = "DEMO"
 MODE_REAL   = "REAL"
 MODE_FUNDED = "FUNDED"
 
-STRATEGY_SCALP     = "SCALP"
-STRATEGY_SWING     = "SWING"
-STRATEGY_AUTO      = "AUTO"   # bot decides based on market
+STRATEGY_SCALP = "SCALP"
+STRATEGY_SWING = "SWING"
+STRATEGY_AUTO  = "AUTO"
 
 ASSETS_XAUUSD = os.getenv("GOLD_SYMBOL", "XAUUSD")
-ASSETS_BTC    = "BTCUSD"
-ASSETS_BOTH   = "BOTH"
 
-# MT5 Timeframe strings for each strategy
+# MT5 timeframe strings per strategy
 SCALP_TIMEFRAMES = ["M1", "M5"]
 SWING_TIMEFRAMES = ["H1", "H4"]
 
-# How many pips the scalp strategy uses for pip value calc (XAUUSD = $0.1/tick)
-PIP_VALUE_XAUUSD = 0.1
-PIP_VALUE_BTC    = 1.0
+PIP_VALUE_XAUUSD = 0.1   # $0.1 per tick on XAUUSD
 
 
 class BotConfig:
-    """All configurable settings — can be updated live from the Android app."""
-    mode:        str   = MODE_DEMO
-    strategy:    str   = STRATEGY_AUTO
-    assets:      str   = ASSETS_BOTH
-    risk_pct:    float = 1.0          # % per trade (will be overridden in funded mode)
-    firm:        str   = "FTMO"
-    firm_phase:  str   = Phase.CHALLENGE
-    firm_balance: float = 10_000.0
-    mt5_account: int   = 0
-    mt5_password: str  = ""
-    mt5_server:   str  = ""
-    exchange:     str  = "binance"    # 'binance' or 'bybit'
-    ccxt_key:     str  = ""
-    ccxt_secret:  str  = ""
-    ccxt_testnet: bool = True
+    """All configurable settings for the Gold-only bot."""
+    mode:          str   = MODE_DEMO
+    strategy:      str   = STRATEGY_SCALP
+    assets:        str   = ASSETS_XAUUSD
+    risk_pct:      float = 2.0
+    leverage:      int   = 500            # broker leverage (e.g. 100, 500, 1000)
+    firm:          str   = "FTMO"
+    firm_phase:    str   = Phase.CHALLENGE
+    firm_balance:  float = 10_000.0
+    mt5_account:   int   = 0
+    mt5_password:  str   = ""
+    mt5_server:    str   = ""
     use_ai_confirmation: bool = True
-    sniper_mode: bool = False
+    sniper_mode:   bool  = False
+    micro_scalp:   bool  = False
+    use_diy_strategy:    bool = True   # Default ON for Gold professional mode
+    diy_scalp_config:    str  = "diy_scalp_config.json"
+    diy_swing_config:    str  = "diy_swing_config.json"
 
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
@@ -125,63 +145,79 @@ class AgniVBot:
     """
 
     def __init__(self, config: BotConfig):
-        # ── Asset Mapping (Standardise Input) ───────────────
-        # Ensure 'XAUUSD' input maps to the actual broker symbol (GAUUSD)
-        if config.assets == "XAUUSD":
-            config.assets = ASSETS_XAUUSD
-        elif config.assets == "BTCUSD":
-            config.assets = ASSETS_BTC
+        # Gold only — always force XAUUSD
+        config.assets = ASSETS_XAUUSD
 
         self.config   = config
         self._running = False
         self._lock    = threading.Lock()
         self._last_daily_reset = date.today()
 
-        # ── Components ───────────────────────────────────────
-        self.mt5: MT5Connector = MT5Connector()
-        self.ccxt      = None  # connected lazily if needed
-        self.scalping  = ScalpingStrategy()
-        self.swing     = SwingStrategy()
-        self.news      = NewsReader(newsapi_key=os.getenv("NEWS_API_KEY", ""))
-        self.risk_mgr  = RiskManager(
-            max_risk_pct          = config.risk_pct,
-            max_daily_loss_pct    = 5.0,
-            max_consecutive_losses= 3,
+        # ── Core components ───────────────────────────────────────────
+        self.mt5      = MT5Connector()
+        self.scalping = ScalpingStrategy()
+        self.swing    = SwingStrategy()
+        self.news     = NewsReader(newsapi_key=os.getenv("NEWS_API_KEY", ""))
+        self.risk_mgr = RiskManager(
+            max_risk_pct           = config.risk_pct,
+            max_daily_loss_pct     = 5.0,
+            max_consecutive_losses = 3,
         )
-        self.smc_engine = SMCEngine()
+        self.smc_engine    = SMCEngine()
         self.funded_engine: FundedModeEngine = None  # type: ignore
-        self.demo_account: DemoMode          = None  # type: ignore
-        self.alerts    = AlertManager(
+        self.demo_account:  DemoMode         = None  # type: ignore
+        self.alerts = AlertManager(
             telegram_token   = os.getenv("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", ""),
             gmail_user       = os.getenv("GMAIL_USER", ""),
             gmail_password   = os.getenv("GMAIL_APP_PASSWORD", ""),
         )
-        self.history = HistoryStore()
+        self.history      = HistoryStore()
         self._correlation = CorrelationEngine(self.history)
-        self._smc         = SMCEngine() # SMCEngine doesn't take args
+        self._smc         = SMCEngine()
+        self.journal      = TradeJournal()
 
-        # ── Asset-Specific Components ───────────────────────
-        if config.assets in (ASSETS_BTC, ASSETS_BOTH):
-            self.btc_binance = BinanceConnector()
-            self.btc_bybit   = BybitConnector()
-            self.btc_scalp   = BTCScalpStrategy()
-            self.btc_swing   = BTCSwingStrategy()
-            self.btc_risk    = BTCRiskManager(max_risk_pct=config.risk_pct)
-            self.btc_alerts  = BTCAlerts(self.alerts)
-            self.btc_ml      = SignalClassifier(symbol="BTCUSD")
+        # ── Gold components ───────────────────────────────────────────
+        self.gold_scalp  = GoldScalpStrategy()
+        self.gold_swing  = GoldSwingStrategy()
+        self.gold_risk   = GoldRiskManager(config)
+        self.gold_alerts = GoldAlerts(self.alerts)
+        self.gold_ml     = SignalClassifier(symbol="XAUUSD")
 
-        if config.assets in (ASSETS_XAUUSD, ASSETS_BOTH):
-            self.gold_scalp   = GoldScalpStrategy()
-            self.gold_swing   = GoldSwingStrategy()
-            self.gold_risk    = GoldRiskManager(config)
-            self.gold_alerts  = GoldAlerts(self.alerts)
-            self.gold_ml      = SignalClassifier(symbol="XAUUSD")
+        # ── DIY Strategy (always on) ────────────────────────────────
+        self.diy_scalp = DIYCustomStrategy(config_path=config.diy_scalp_config)
+        self.diy_swing = DIYCustomStrategy(config_path=config.diy_swing_config)
+        logger.info("[Core] DIY Custom Strategy Builder ACTIVE (ZP v1)")
 
-        # Open positions tracking for breakeven (real mode)
-        self._real_positions: dict = {}  # ticket → {sl, tp, entry, direction}
+        # ── World Monitor Intelligence (Defensive Shield) ──
+        self.world_monitor = WorldMonitorAPI()
 
-        logger.info(f"[Core] Agni-V Bot initialised | Mode={config.mode} | Assets={config.assets}")
+        # ── Dashboard State ──
+        self.dashboard_state = {
+            "symbol": ASSETS_XAUUSD,
+            "balance": 0.0,
+            "equity": 0.0,
+            "positions": 0,
+            "metrics": {
+                "trend": "Sideways",
+                "momentum": "Neutral",
+                "volume": "Neutral",
+                "rsi": 50.0,
+                "adx": 20.0,
+                "vwap": 0.0,
+                "regime": "Low Volatility",
+                "signal": "HOLD",
+                "strength": 0.0
+            }
+        }
+
+        # Open positions tracking
+        self._real_positions: dict = {}   # ticket → {sl, tp, entry, direction, journal_id}
+
+        logger.info(
+            f"[Core] Agni-V Gold Bot initialised | Mode={config.mode} "
+            f"| Strategy={config.strategy}"
+        )
 
     def _play_sound(self, action: str):
         """Play system sounds or custom WAV files for trade events."""
@@ -218,19 +254,16 @@ class AgniVBot:
         logger.info("[Core] Starting Agni-V Bot...")
         self._setup_mode(self.config)
         
-        # Start BTC Connectors if needed
-        if self.config.assets in (ASSETS_BTC, ASSETS_BOTH):
-            self.btc_binance.start()
-
         # Pre-warm historical candle cache in the background so strategies
         # have real data available before the first loop tick.
-        refresh_syms = []
-        if self.config.assets in (ASSETS_XAUUSD, ASSETS_BOTH):
-            refresh_syms.append(ASSETS_XAUUSD)
-        if self.config.assets in (ASSETS_BTC, ASSETS_BOTH):
-            refresh_syms.append(ASSETS_BTC)
-        
-        self.history.refresh_all_background(symbols=refresh_syms)
+        self.history.refresh_all_background(symbols=[ASSETS_XAUUSD])
+
+        # ── Start News Sentiment Background Refresh ───────────────────────
+        # Performs an immediate first fetch then refreshes every 15 minutes.
+        # Without this call _articles stays empty and sentiment is always NEUTRAL.
+        self.news.start_background_refresh()
+        logger.info("[Core] News sentiment engine started.")
+
         self._running = True
 
         try:
@@ -248,7 +281,7 @@ class AgniVBot:
         # Use getattr(self, 'attr', None) to avoid AttributeErrors if startup failed 
         # or if specific assets (BTC/Gold) weren't initialized.
         components_to_stop = [
-            'btc_binance', 'btc_bybit', 'ccxt', 'mt5'
+            'btc_binance', 'btc_bybit', 'ccxt', 'mt5', 'news'
         ]
         
         for comp_name in components_to_stop:
@@ -277,15 +310,11 @@ class AgniVBot:
 
     def _setup_mode(self, config: BotConfig):
         cfg = config
+        # Connect MT5 for real/funded modes
         if cfg.mode in (MODE_REAL, MODE_FUNDED):
             ok = self.mt5.connect(cfg.mt5_account, cfg.mt5_password, cfg.mt5_server)
             if not ok:
                 raise RuntimeError("MT5 connection failed. Check credentials.")
-
-            if cfg.assets in (ASSETS_BTC, ASSETS_BOTH) and cfg.ccxt_key:
-                self.ccxt = CCXTConnector(
-                    cfg.exchange, cfg.ccxt_key, cfg.ccxt_secret, testnet=cfg.ccxt_testnet
-                )
 
         if cfg.mode == MODE_DEMO:
             self.demo_account = DemoMode(starting_balance=cfg.firm_balance)
@@ -296,7 +325,6 @@ class AgniVBot:
                 phase=cfg.firm_phase,
                 starting_balance=cfg.firm_balance,
             )
-            # Override risk with funded mode max
             self.risk_mgr.max_risk_pct = 2.0
 
         info = self._get_balance()
@@ -323,13 +351,72 @@ class AgniVBot:
 
     # ── Main Loop ─────────────────────────────────────────────
 
+    # ── Dashboard Layout ──────────────────────────────────────
+    def _make_layout(self) -> Layout:
+        """Create the dashboard layout with table and logs."""
+        layout = Layout()
+        layout.split_column(
+            Layout(name="header", size=3),
+            Layout(name="body"),
+            Layout(name="footer", size=12)
+        )
+
+        # Header
+        mode_color = "green" if self.config.mode == MODE_REAL else ("yellow" if self.config.mode == MODE_FUNDED else "cyan")
+        header_text = f"[bold white on blue] AGNI-V GOLD BOT [/]  MODE: [bold {mode_color}]{self.config.mode}[/]  SYMBOL: [bold white]{ASSETS_XAUUSD}[/]  BAL: [bold green]${self.dashboard_state['balance']:.2f}[/]"
+        layout["header"].update(Panel(Text.from_markup(header_text), style="blue", box=box.ROUNDED))
+
+        # Main Table (Ultimate Scalping Tool)
+        m = self.dashboard_state["metrics"]
+        table = Table(box=box.DOUBLE_EDGE, expand=True, show_header=True, header_style="bold white")
+        table.add_column("ULTIMATE SCALPING TOOL", justify="center", style="bold white")
+        table.add_column("Status / Value", justify="center", style="bold")
+
+        # Row styling logic
+        trend_val = m.get("trend", "Sideways")
+        trend_style = "bold green" if trend_val == "UP" else ("bold red" if trend_val == "DOWN" else "dim white")
+        
+        momentum_val = m.get("momentum", "Neutral")
+        mom_style = "bold green" if momentum_val == "Bullish" else ("bold red" if momentum_val == "Bearish" else "dim white")
+
+        sig_val = m.get("signal", "HOLD")
+        sig_color = "bold white on green" if sig_val == "BUY" else ("bold white on red" if sig_val == "SELL" else "dim white")
+        
+        # Advanced Signal (Logic: based on strength or final_signal)
+        adv_sig = sig_val if m.get("strength", 0) > 0.8 else "No Trade"
+        adv_color = "bold white on green" if adv_sig == "BUY" else ("bold white on red" if adv_sig == "SELL" else "black on bright_yellow")
+
+        rsi_val = m.get("rsi", 50.0)
+        rsi_style = "bold white on green" if rsi_val < 30 else ("bold white on red" if rsi_val > 70 else "black on bright_yellow")
+
+        # HTF Filter (Simple H1 check)
+        htf_val = "Bullish" if m.get("trend") == "UP" else ("Bearish" if m.get("trend") == "DOWN" else "Neutral")
+        htf_style = "bold white on green" if htf_val == "Bullish" else ("bold white on red" if htf_val == "Bearish" else "dim white")
+
+        # Building the table rows exactly like the image
+        table.add_row("Trend (TF)", f"[{trend_style}]{trend_val}[/]")
+        table.add_row("Momentum (TF)", f"[{mom_style}]{momentum_val}[/]")
+        table.add_row("Volume (CMF)", "[dim white]Neutral[/]") # Placeholder for CMF
+        table.add_row("Basic Signal", f"[{sig_color}]{'No Trade' if sig_val == 'HOLD' else sig_val}[/]")
+        table.add_row("Advanced Signal", f"[{adv_color}] {adv_sig if adv_sig != 'No Trade' else 'No Trade'} [/]")
+        table.add_row("RSI", f"[{rsi_style}] {rsi_val} [/]")
+        table.add_row("HTF Filter", f"[{htf_style}] {htf_val} [/]")
+        table.add_row("VWAP", f"[bold white on green] {m.get('vwap', 0.0)} [/]")
+        table.add_row("ADX", f"[bold white on red] {m.get('adx', 0.0)} [/]")
+        table.add_row("Mode", "[bold white on green] Custom [/]")
+        table.add_row("Regime", f"[bold white on green] {m.get('regime', 'Low Volatility')} [/]")
+
+        layout["body"].update(table)
+
+        # Logs Panel
+        logs_text = "\n".join(dashboard_logs.logs)
+        layout["footer"].update(Panel(Text(logs_text), title="[bold white]Recent Intelligence Logs[/]", border_style="bright_black"))
+
+        return layout
+
     def _main_loop(self):
         """Tick-level main loop. Checks each symbol every cycle."""
-        SYMBOLS = []
-        if self.config.assets in (ASSETS_XAUUSD, ASSETS_BOTH):
-            SYMBOLS.append(ASSETS_XAUUSD)
-        if self.config.assets in (ASSETS_BTC, ASSETS_BOTH):
-            SYMBOLS.append(ASSETS_BTC)
+        SYMBOLS = [ASSETS_XAUUSD]
 
         logger.info(f"[Core] Main loop started | Symbols: {SYMBOLS}")
 
@@ -342,176 +429,240 @@ class AgniVBot:
                 self.alerts.risk_alert("Trading resumed manually via flag file.")
             self._run_daily_reset()
 
-            for symbol in SYMBOLS:
-                try:
-                    self._process_symbol(symbol)
-                except Exception as e:
-                    logger.error(f"[Core] Error processing {symbol}: {e}", exc_info=True)
+            # Setup Dashboard
+            with Live(self._make_layout(), refresh_per_second=2, screen=True) as live:
+                while self._running:
+                    # Run Daily Reset Check
+                    self._run_daily_reset()
 
-            # Trailing Stop Loss checks for real positions
-            if self.config.mode in (MODE_REAL, MODE_FUNDED):
-                self._check_trailing_sl()
+                    for symbol in SYMBOLS:
+                        try:
+                            self._process_symbol(symbol)
+                        except Exception as e:
+                            logger.error(f"[Core] Error processing {symbol}: {e}")
 
-            # Weekend: close all funded positions by Friday 21:00 UTC
-            if self.funded_engine and self._is_weekend_close_time():
-                self._close_all_positions("Weekend close — prop firm rule")
+                    # Trailing Stop Loss checks for real positions
+                    if self.config.mode in (MODE_REAL, MODE_FUNDED):
+                        self._check_trailing_sl()
 
-            time.sleep(30)  # 30-second tick
+                    # Weekend: close all funded positions by Friday 21:00 UTC
+                    if self.funded_engine and self._is_weekend_close_time():
+                        self._close_all_positions("Weekend close — prop firm rule")
+
+                    # Update Dashboard
+                    live.update(self._make_layout())
+                    time.sleep(1) # Refresh every second
 
     # ── Symbol Processing ─────────────────────────────────────
 
     def _process_symbol(self, symbol: str):
-        # Initialize variables to prevent UnboundLocalError
-        entry, sl, tp, volume, pip_val = 0.0, 0.0, 0.0, 0.0, 10.0
-        
-        # 1. Fetch news sentiment
-        sentiment = self.news.get_sentiment(symbol)
+        """Full signal pipeline for one XAUUSD tick."""
+        # 1. News sentiment
+        sentiment       = self.news.get_sentiment(symbol)
         upcoming_events = sentiment.get("high_impact_events", [])
-        sent_label = sentiment.get("label", "NEUTRAL")
+        sent_label      = sentiment.get("label", "NEUTRAL")
 
-        # 2. Get current price
+        # 2. Price tick
         price_data = self._get_tick(symbol)
         if not price_data:
             return
 
-        # 3. Determine strategy
-        strategy_mode = self._select_strategy(symbol)
-        
-        # Small Account Turbo: Force SCALP for < $50
-        balance_data = self._get_balance()
-        current_bal  = balance_data.get("balance", 10_000)
-        if current_bal < 50 and symbol == ASSETS_XAUUSD:
-            strategy_mode = STRATEGY_SCALP
-            logger.info(f"[Core] {symbol} | Small Account Turbo ACTIVE: Forced SCALP mode.")
-            
-        # 4. Generate signal
-        signal_data = self._generate_signal(symbol, strategy_mode, is_nano=(current_bal < 50))
-        signal      = signal_data.get("signal", "HOLD")
-        atr         = signal_data.get("atr", 0)
-        strength    = signal_data.get("strength", 0)
+        # 2.5 World Monitor Defensive Shield (Block trades during Global Shocks)
+        crisis_level = self.world_monitor.get_crisis_level()
+        if crisis_level == "CRITICAL":
+            logger.warning(f"[Core] 🛡️ WORLD MONITOR SHIELD: Blocking ALL {symbol} trades due to Global Macro Crisis!")
+            return
 
-        # 5. Blend with sentiment
+        # 3. Balance & account tier
+        balance_data = self._get_balance()
+        current_bal  = float(balance_data.get("balance", 100))
+        self.risk_mgr.set_dynamic_safety(current_bal)
+        self.gold_risk.set_dynamic_safety(current_bal)
+
+        # 4. Strategy selection
+        strategy_mode = self._select_strategy(symbol)
+        is_nano       = current_bal < 50
+        if is_nano:
+            strategy_mode = STRATEGY_SCALP
+            logger.info(f"[Core] Nano Account (${current_bal:.2f}) — forced SCALP mode")
+
+        # 5. Generate signal
+        signal_data  = self._generate_signal(symbol, strategy_mode,
+                                              is_nano=is_nano,
+                                              micro_scalp=self.config.micro_scalp)
+        signal       = signal_data.get("signal", "HOLD")
+        atr          = float(signal_data.get("atr", 0) or 0)
+        strength     = float(signal_data.get("strength", 0))
+
+        # 6. Sentiment blend
         final_signal = self._blend_signal(signal, sent_label)
 
         logger.info(
-            f"[Core] {symbol} | Strategy={strategy_mode} | TechSignal={signal} "
-            f"| Sentiment={sent_label} | Final={final_signal} | Strength={strength:.0%} | Reason={signal_data.get('reason', 'N/A')}"
+            f"[Core] XAUUSD | Strategy={strategy_mode} | Signal={signal} "
+            f"| Sentiment={sent_label} | Final={final_signal} "
+            f"| Strength={strength:.0%} | {signal_data.get('reason', '')}"
         )
+
+        # Update Dashboard State
+        self.dashboard_state["balance"] = current_bal
+        self.dashboard_state["positions"] = len(self._get_open_positions())
+        if self.config.use_diy_strategy:
+            status = self.diy_scalp.get_status() if strategy_mode == STRATEGY_SCALP else self.diy_swing.get_status()
+            m = status.get("metrics", {})
+            self.dashboard_state["metrics"].update(m)
+            self.dashboard_state["metrics"]["signal"] = signal
+            self.dashboard_state["metrics"]["strength"] = strength
 
         if final_signal == "HOLD" or strength < 0.5:
             return
 
-        # 5b. Machine Learning Filter
+        # 7. ML filter
         ml_input = {
             "rsi":            signal_data.get("rsi", 50.0),
             "ema_distance":   signal_data.get("ema_distance", 0.0),
             "atr":            atr,
             "volume_ratio":   signal_data.get("volume_ratio", 1.0),
-            "session_id":     get_current_gold_session()["session_id"] if symbol == ASSETS_XAUUSD else 2,
+            "session_id":     get_current_gold_session()["session_id"],
             "news_score":     sentiment.get("score", 0.0),
             "spread":         price_data.get("ask", 0) - price_data.get("bid", 0),
-            "mtf_confluence": signal_data.get("mtf_confluence", 3)
+            "mtf_confluence": signal_data.get("mtf_confluence", 3),
         }
-        ml_model = self.btc_ml if symbol == ASSETS_BTC else self.gold_ml
-
-        # ML Ultra Mode: Higher threshold for low balance
-
-        # Update risk parameters dynamically
-        self.risk_mgr.set_dynamic_safety(current_bal)
-        if symbol == ASSETS_XAUUSD:
-            self.gold_risk.set_dynamic_safety(current_bal)
-        elif symbol == ASSETS_BTC:
-            self.btc_risk.set_dynamic_safety(current_bal)
-
-        # Initialize ai_approved
         ai_approved = False
-        
         if not self.config.use_ai_confirmation:
-            logger.info(f"[Core] {symbol} | AI Confirmation BYPASSED per config.")
+            ai_approved = True
+            logger.info(f"[Core] XAUUSD | AI confirmation BYPASSED")
         else:
             threshold = 0.75 if current_bal < 500 else 0.70
-            ml_res = ml_model.predict_signal(ml_input)
-            
-            if ml_res["confidence"] < threshold:
-                logger.warning(f"[Core] {symbol} | Trade REJECTED by AI (Confidence: {ml_res['confidence']:.1%}, Threshold: {threshold:.0%})")
+            ml_res = self.gold_ml.predict_signal(ml_input)
+            if strength >= 0.95:
+                logger.info(f"[Core] XAUUSD | 🔥 PERFECT SETUP ({strength:.0%}) — bypassing AI")
+                ai_approved = True
+            elif ml_res["confidence"] < threshold:
+                logger.warning(
+                    f"[Core] XAUUSD | Trade REJECTED by AI "
+                    f"(conf={ml_res['confidence']:.1%} < {threshold:.0%})"
+                )
                 return
-            
-            logger.info(f"[Core] {symbol} | Trade APPROVED by AI (Confidence: {ml_res['confidence']:.1%})")
-            logger.info(f"[Core] {symbol} | SNIPER CONFIRMED: Entering High-Precision Trade!")
-            ai_approved = True
+            else:
+                logger.info(f"[Core] XAUUSD | ✅ AI APPROVED (conf={ml_res['confidence']:.1%})")
+                ai_approved = True
 
-        # 5c. Spread-to-ATR Safety (New)
+        # 8. Spread guard
         spread = price_data.get("ask", 0) - price_data.get("bid", 0)
-        if strategy_mode == STRATEGY_SCALP and atr > 0:
-            # Re-read spread for the exact symbol to ensure accuracy
-            if spread > (atr * 0.25): # Limit spread to 25% of ATR
-                logger.warning(f"[Core] {symbol} | Scalp REJECTED: Spread too wide ({spread:.5f} vs ATR {atr:.5f})")
-                return
+        if strategy_mode == STRATEGY_SCALP and atr > 0 and spread > atr * 0.25:
+            logger.warning(f"[Core] XAUUSD | Scalp REJECTED: spread too wide ({spread:.5f} vs {atr:.5f})")
+            return
 
-        # 6. Pre-trade checks
-        can_trade, reason = self._check_all_guards(upcoming_events, symbol, final_signal, strategy=strategy_mode, ai_approved=ai_approved)
+        # 9. Pre-trade guards
+        can_trade, reason = self._check_all_guards(
+            upcoming_events, symbol, final_signal, strategy=strategy_mode, ai_approved=ai_approved
+        )
         if not can_trade:
             logger.warning(f"[Core] Trade blocked: {reason}")
             return
 
-        # 7. Calculate position size & levels
-        balance  = self._get_balance().get("balance", 10_000)
-        entry, sl, tp, volume = 0.0, 0.0, 0.0, 0.0
-        
-        if symbol == ASSETS_BTC:
-            risk_res = self.btc_risk.check_all_rules(balance, symbol, final_signal, atr,
-                                                    is_gold_active=(ASSETS_XAUUSD in self._real_positions))
-            volume = risk_res["volume"]
-            # Narrow types for the static analyzer
-            temp_ask = price_data.get("ask")
-            temp_bid = price_data.get("bid")
-            
-            if (not isinstance(temp_ask, (int, float))) or (not isinstance(temp_bid, (int, float))) or (not isinstance(atr, (int, float))):
-                logger.warning(f"[Core] {symbol} | Invalid price/ATR: ask={temp_ask}, bid={temp_bid}, atr={atr}")
-                return
-            
-            # Redeclare with guaranteed types using cast
-            f_ask = cast(float, temp_ask)
-            f_bid = cast(float, temp_bid)
-            f_atr = cast(float, atr)
-            
-            sl = f_ask - (1.5 * f_atr) if final_signal == "BUY" else f_bid + (1.5 * f_atr)
-            tp = f_ask + (3.0 * f_atr) if final_signal == "BUY" else f_bid - (3.0 * f_atr)
-            entry = f_ask if final_signal == "BUY" else f_bid
-        else:
-            pip_val  = PIP_VALUE_XAUUSD
-            sl_pips  = (atr / 0.0001) if atr > 0 else 150
-            volume   = self.risk_mgr.calculate_lot_size(balance, sl_pips, pip_val, symbol)
-            entry = price_data.get("ask") if final_signal == "BUY" else price_data.get("bid")
-            if entry is None:
-                return
-            sl, tp = self.risk_mgr.calculate_sl_tp(entry, atr or (entry * 0.001), final_signal)
-        # ── Global Signal Broadcasting (Verified Signals Only) ─────
-        # Broadcast the signal with the calculated SL/TP levels
-        alert_manager = self.gold_alerts if symbol == ASSETS_XAUUSD else self.btc_alerts
-        alert_manager.signal_alert(symbol, final_signal, strategy_mode, signal_data.get("reason", ""),
-                                   entry=entry, sl=sl, tp=tp)
+        # 10. Compute entry, SL, TP
+        entry = price_data.get("ask") if final_signal == "BUY" else price_data.get("bid")
+        if entry is None:
+            return
+        entry = float(entry)
+        sl_pts = max(atr * 1.5, 1.0)   # minimum 1.0 XAU point SL
+        sl = entry - sl_pts if final_signal == "BUY" else entry + sl_pts
+        tp = entry + (sl_pts * 2.5) if final_signal == "BUY" else entry - (sl_pts * 2.5)  # 2.5R TP
 
-        # 8. Place trade
-        news_boosted = False
-        if sent_label != "NEUTRAL":
-            if (tech_signal == "BUY" and sent_label == "BULLISH") or (tech_signal == "SELL" and sent_label == "BEARISH"):
-                news_boosted = True
-                logger.info(f"[Core] 🚀 News momentum alignment detected for {symbol}. Boosting TP.")
+        # 11. Gold risk rules + pyramid lots
+        open_pos     = self._get_open_positions()
+        open_gold    = [p for p in open_pos if ASSETS_XAUUSD in str(p.get("symbol", ""))
+                        or self.mt5.map_symbol(ASSETS_XAUUSD) in str(p.get("symbol", ""))]
+        risk_res = self.gold_risk.check_all_rules(
+            balance         = current_bal,
+            signal          = final_signal,
+            atr             = atr,
+            open_gold_pos   = len(open_gold),
+            spread_points   = spread,
+            news_pause      = bool(upcoming_events),
+            signal_strength = strength,
+        )
+        if not risk_res["can_trade"]:
+            logger.warning(f"[Core] Gold risk blocked: {risk_res['reason']}")
+            return
 
-        trade = self._place_trade(symbol, final_signal, volume, entry, sl, tp,
-                                  strategy=strategy_mode, sentiment=sent_label,
-                                  news_boosted=news_boosted)
-        if trade and "error" not in trade:
-            self.alerts.trade_opened(
-                {**trade, "strategy": strategy_mode, "mode": self.config.mode},
-                sentiment=sent_label
+        lots      = risk_res["lots"]          # e.g. [0.01, 0.01, 0.01]
+        n_orders  = len(lots)
+        sl_val    = risk_res["sl_value"]
+
+        # Recompute SL/TP with gold risk manager's SL
+        sl = entry - sl_val if final_signal == "BUY" else entry + sl_val
+        tp = entry + (sl_val * 2.5) if final_signal == "BUY" else entry - (sl_val * 2.5)
+
+        # 12. Signal alert (broadcast to Telegram/email)
+        self.gold_alerts.signal_alert(
+            symbol, final_signal, strategy_mode, signal_data.get("reason", ""),
+            entry=entry, sl=sl, tp=tp
+        )
+
+        # 13. News boost — widen TP on aligned sentiment
+        news_boosted = (sent_label == "BULLISH" and final_signal == "BUY") or \
+                       (sent_label == "BEARISH" and final_signal == "SELL")
+        if news_boosted:
+            logger.info(f"[Core] 🚀 News momentum aligned — boosting TP by 20%")
+            tp = entry + (sl_val * 3.0) if final_signal == "BUY" else entry - (sl_val * 3.0)
+
+        # 14. Execute pyramid orders
+        self._execute_pyramid_orders(
+            symbol=symbol, direction=final_signal, lots=lots,
+            entry=entry, sl=sl, tp=tp,
+            strategy=strategy_mode, sentiment=sent_label,
+            news_boosted=news_boosted, strength=strength,
+        )
+
+    def _execute_pyramid_orders(
+        self, symbol: str, direction: str, lots: List[float],
+        entry: float, sl: float, tp: float,
+        strategy: str, sentiment: str,
+        news_boosted: bool, strength: float,
+    ):
+        """
+        Place 1–5 pyramid orders based on signal strength.
+        Order 1 = anchor (largest), subsequent orders = scaled down.
+        """
+        n = len(lots)
+        logger.info(
+            f"[Core] 📊 PYRAMID EXECUTE: {n} orders | {direction} XAUUSD "
+            f"| lots={lots} | strength={strength:.0%}"
+        )
+        self._play_sound("entry")
+
+        placed = 0
+        for i, lot in enumerate(lots):
+            trade = self._place_trade(
+                symbol, direction, lot, entry, sl, tp,
+                strategy=strategy, sentiment=sentiment,
+                news_boosted=news_boosted
             )
+            if trade and "error" not in trade:
+                placed += 1
+                logger.info(
+                    f"[Core] Order {i+1}/{n} PLACED ✅ | lot={lot} | ticket={trade.get('ticket', '?')}"
+                )
+                if i == 0:  # Only broadcast the alert for the first (anchor) order
+                    try:
+                        self.alerts.trade_opened(
+                            {**trade, "strategy": strategy, "mode": self.config.mode},
+                            sentiment=sentiment
+                        )
+                    except Exception:
+                        pass
+            else:
+                err = trade.get("error", "unknown") if trade else "rejected"
+                logger.warning(f"[Core] Order {i+1}/{n} FAILED: {err}")
+
+        if placed > 0:
+            logger.info(f"[Core] 🎯 {placed}/{n} orders placed | XAUUSD {direction}")
         else:
-            err_msg = trade.get("error", "Unknown Error") if trade else "Trade rejected"
-            logger.error(f"[Core] {symbol} | Trade FAILED to execute: {err_msg}")
-            # Also notify Telegram if the user is Subscribed
-            self.alerts.risk_alert(f"❌ Trade failed for {symbol}: {err_msg}")
+            logger.error(f"[Core] ❌ ALL {n} orders failed for XAUUSD {direction}")
+            self.alerts.risk_alert(f"❌ All pyramid orders failed for XAUUSD {direction}")
+
 
     # ── Strategy Selection ────────────────────────────────────
 
@@ -536,124 +687,108 @@ class AgniVBot:
 
     # ── Signal Generation ──────────────────────────────────────
  
-    def _generate_signal(self, symbol: str, strategy_mode: str, is_nano: bool = False) -> dict:
-        # ── Bitcoin Support ──────────────────────────────────
-        if symbol == ASSETS_BTC:
-            df = self.history.get_candles(symbol, "M5", 200) # Indicators need 200
-            df_h1 = self.history.get_candles(symbol, "H1", 200) if strategy_mode == STRATEGY_SCALP else None
-            
-            ignore_sess = self.config.sniper_mode or (self.config.strategy == STRATEGY_SCALP)
-            is_sniper   = self.config.sniper_mode
-            
-            if strategy_mode == STRATEGY_SCALP:
-                return self.btc_scalp.generate_signal(df, df_h1=df_h1, is_nano=is_nano, ignore_sessions=ignore_sess, is_sniper=is_sniper)
-            else:
-                # BTC Swing currently doesn't take these, but we'll add them to the call for future-proofing
-                # or just call it simply if the class isn't updated yet.
-                try:
-                    return self.btc_swing.generate_signal(df, is_nano=is_nano, ignore_sessions=ignore_sess, is_sniper=is_sniper)
-                except TypeError:
-                    return self.btc_swing.generate_signal(df)
+    def _generate_signal(self, symbol: str, strategy_mode: str,
+                         is_nano: bool = False, micro_scalp: bool = False) -> dict:
 
-        # ── XAUUSD Support ───────────────────────────────────
         if symbol == ASSETS_XAUUSD:
-            # 1. Fetch data (MT5 or Cache)
+            tf = "M1" if micro_scalp else ("M5" if strategy_mode == STRATEGY_SCALP else "H1")
             if self.config.mode == MODE_DEMO and not self.mt5.connected:
-                df = self.history.get_candles(symbol, "M5" if strategy_mode == STRATEGY_SCALP else "H1", 300)
+                df = self.history.get_candles(symbol, tf, 300)
             else:
-                df = self.mt5.get_ohlcv(symbol, "M5" if strategy_mode == STRATEGY_SCALP else "H1", 300)
-            
+                df = self.mt5.get_ohlcv(symbol, tf, 300)
+
             if df.empty:
                 return {"signal": "HOLD", "atr": 0, "strength": 0}
 
-            # 2. Strategy Analysis
-            strat = self.gold_scalp if strategy_mode == STRATEGY_SCALP else self.gold_swing
-            
-            # Sniper Mode or Manual Scalp selection bypasses session restrictions
-            ignore_sess = self.config.sniper_mode or (self.config.strategy == STRATEGY_SCALP)
+            # Gold Micro-Scalp: prefer London Open window (07:00-09:00 UTC)
+            if micro_scalp:
+                now_hour = datetime.utcnow().hour
+                is_london_open = 7 <= now_hour <= 9
+                is_ny_open     = 13 <= now_hour <= 15
+                if not (is_london_open or is_ny_open):
+                    return {
+                        "signal": "HOLD", "atr": 0, "strength": 0,
+                        "reason": f"Micro-Scalp Gold: waiting for London (07-09) or NY Open (13-15) UTC | now={now_hour}h"
+                    }
+                logger.info(f"[Core] Gold Micro-Scalp Mode: M1 candles | {'London' if is_london_open else 'NY'} Open window")
+
+            ignore_sess = self.config.sniper_mode or (self.config.strategy == STRATEGY_SCALP) or micro_scalp
             is_sniper   = self.config.sniper_mode
-            
-            if strategy_mode == STRATEGY_SCALP:
-                res = self.gold_scalp.generate_signal(df, is_nano=is_nano, ignore_sessions=ignore_sess, is_sniper=is_sniper)
+
+            # ── DIY Strategy override (if enabled) ──────────────
+            if self.config.use_diy_strategy and self.diy_scalp is not None:
+                diy_strat  = self.diy_scalp if strategy_mode == STRATEGY_SCALP else self.diy_swing
+                diy_signal = diy_strat.generate_signal(df)
+                status     = diy_strat.get_status()
+                logger.info(
+                    f"[Core] {symbol} | DIY Strategy signal={diy_signal} "
+                    f"| pending={status['pending_direction']} bars={status['pending_bars']}/{status['signal_expiry']}"
+                )
+                real_atr = float((df["high"].tail(14) - df["low"].tail(14)).mean())
+                res = {"signal": diy_signal, "atr": real_atr, "strength": 0.95 if diy_signal != "HOLD" else 0,
+                       "reason": f"DIY[{status['leading_indicator']}]+{status['active_filters']}"}
             else:
-                res = self.gold_swing.generate_signal(df)
-            
-            # 3. Session Alerts
+                # Default gold strategies
+                if strategy_mode == STRATEGY_SCALP:
+                    res = self.gold_scalp.generate_signal(df, is_nano=is_nano,
+                                                          ignore_sessions=ignore_sess, is_sniper=is_sniper)
+                else:
+                    res = self.gold_swing.generate_signal(df)
+
             session_info = get_current_gold_session()
             if session_info["is_killzone"]:
                 self.gold_alerts.session_alert(session_info["active_kz"], True)
-            
+
         # Signal broadcasting moved to _process_symbol for final verified signals
         return res
-
-        return {"signal": "HOLD", "atr": 0, "strength": 0}
 
     # ── Sentiment Blending ────────────────────────────────────
 
     def _blend_signal(self, tech_signal: str, sentiment: str) -> str:
         """
         Combine technical signal and news sentiment.
-        Conflicting signals → HOLD (conservative).
+        USER EXPLICIT OVERRIDE: Blindly trust technical limits.
         """
-        if tech_signal == "HOLD":
-            return "HOLD"
-        if sentiment == "NEUTRAL":
-            return tech_signal
-        if tech_signal == "BUY" and sentiment == "BULLISH":
-            return "BUY"
-        if tech_signal == "SELL" and sentiment == "BEARISH":
-            return "SELL"
-        # Conflicting: tech says buy but sentiment is bearish (or vice versa)
-        logger.info("[Core] Signal/Sentiment conflict → HOLD")
-        return "HOLD"
+        if tech_signal != "HOLD":
+            logger.info(f"[Core] 🔥 SENTIMENT OVERRIDE: Forcing '{tech_signal}' setup over '{sentiment}' news")
+        return tech_signal
 
     # ── Pre-Trade Guards ──────────────────────────────────────
 
-    def _check_all_guards(self, upcoming_events: list, symbol: str, direction: str, strategy: str = "SCALP", ai_approved: bool = False) -> tuple[bool, str]:
-        # Get all open positions once
-        open_pos = self._get_open_positions()
-        
-        # 1. Asset-Specific Limits (User Request: 2 Gold, 1 BTC, Total 3)
-        gold_pos = [p for p in open_pos if p.get("symbol") in (ASSETS_XAUUSD, self.mt5.map_symbol(ASSETS_XAUUSD))]
-        btc_pos  = [p for p in open_pos if p.get("symbol") in (ASSETS_BTC, "BTCUSD", "BITCOIN")] # generic check for BTC
-        
-        # Check sub-limits
-        if symbol == ASSETS_XAUUSD:
-            if len(gold_pos) >= 2:
-                return False, f"Gold sub-limit (2) reached. Already have {len(gold_pos)} Gold positions."
-        elif symbol == ASSETS_BTC:
-            if len(btc_pos) >= 1:
-                return False, f"BTC sub-limit (1) reached. Already have {len(btc_pos)} BTC position."
+    def _check_all_guards(self, upcoming_events: list, symbol: str, direction: str,
+                          strategy: str = "SCALP", ai_approved: bool = False) -> tuple:
+        open_pos  = self._get_open_positions()
+        gold_pos  = [p for p in open_pos
+                     if p.get("symbol") in (ASSETS_XAUUSD, self.mt5.map_symbol(ASSETS_XAUUSD))]
+        gold_limit = 10 if strategy == STRATEGY_SCALP else 3
 
-        # 2. Global Concurrency check: max 3 open positions total
-        # (Relaxed slightly if AI approved? User said "place a three order a time", implying a hard cap)
-        limit = 5 if ai_approved else 3
-        if len(open_pos) >= limit:
-            return False, f"Max global concurrent positions ({limit}) reached"
-            
-        # 3. Market Session Integrity Guard (XAUUSD optimization)
-        # Ensure we only trade Gold during high-volume periods (London + NY overlaps)
-        # NOTE: Skipped for SWING trades or if AI APPROVED.
+        if len(gold_pos) >= gold_limit:
+            return False, f"Gold limit ({gold_limit}) reached — {len(gold_pos)} positions open."
+
+        # Global concurrency cap
+        global_limit = 10 if strategy == STRATEGY_SCALP else (5 if ai_approved else 3)
+        if len(open_pos) >= global_limit:
+            return False, f"Max global positions ({global_limit}) reached"
+
+        # Asian session guard for scalp (22–07 UTC low volume)
         hour = datetime.utcnow().hour
-        logger.info(f"[Core] {symbol} | Session Guard Check: hour={hour}, symbol={symbol}, strategy={strategy}, ai_approved={ai_approved}")
-        if symbol == ASSETS_XAUUSD and strategy != STRATEGY_SWING and not ai_approved:
-            # Avoid trading from 22:00 UTC to 07:00 UTC (Sydney/Tokyo session)
+        if strategy != STRATEGY_SWING and not ai_approved:
             if hour >= 22 or hour < 7:
-                logger.warning(f"[Core] {symbol} | Asian Session block triggered: hour={hour}")
-                return False, f"{symbol} is in low-volume Asian Session."
+                logger.warning(f"[Core] Asian session block | hour={hour}")
+                return False, "Low-volume Asian session — waiting for London/NY open."
 
-        # Correlation Engine Guard (DXY Check)
+        # Correlation engine
         correlation_check = self._correlation.check_correlation_guard(symbol, direction)
         if not correlation_check["safe"]:
             return False, correlation_check["reason"]
-            
-        # Base risk checks
+
+        # Base risk manager
         balance = self._get_balance().get("balance", 0)
         ok, reason = self.risk_mgr.check_can_trade(balance)
         if not ok:
             return False, reason
 
-        # Funded mode additional checks
+        # Funded mode
         if self.funded_engine:
             ok2, reason2 = self.funded_engine.check_can_trade(
                 upcoming_news=upcoming_events,
@@ -669,7 +804,7 @@ class AgniVBot:
     # ── Trade Execution ───────────────────────────────────────
 
     def _place_trade(self, symbol, direction, volume, entry, sl, tp,
-                     strategy="", sentiment="NEUTRAL") -> dict:
+                     strategy="", sentiment="NEUTRAL", news_boosted=False) -> dict:
         trade_meta = {
             "symbol":    symbol,
             "direction": direction,
@@ -687,18 +822,35 @@ class AgniVBot:
                 symbol, direction, volume, entry, sl, tp, comment="agniv_demo"
             )
         elif self.config.mode in (MODE_REAL, MODE_FUNDED):
-            # Apply News Boost to TP if flagged
+            # ── Micro-Scalp: use 0.5R TP for fast exits ─────────────────────────
+            if self.config.micro_scalp:
+                risk_dist = abs(entry - sl)
+                tp = (entry + 0.5 * risk_dist) if direction == "BUY" else (entry - 0.5 * risk_dist)
+                logger.info(f"[Core] ⚡ Micro-Scalp TP set to 0.5R | TP={tp:.5f}")
+
+            # Apply News Boost to TP if flagged (only if not already in micro mode)
             final_tp = tp
-            if news_boosted:
+            if news_boosted and not self.config.micro_scalp:
                 risk_dist = abs(entry - sl)
                 final_tp = entry + (3.0 * risk_dist) if direction == "BUY" else entry - (3.0 * risk_dist)
             
             result = self.mt5.place_market_order(symbol, direction, volume, sl, final_tp)
             if "ticket" in result:
+                # Log to trade journal
+                j_id = self.journal.log_open(
+                    symbol=symbol, direction=direction,
+                    reason=trade_meta.get("reason", ""),
+                    strength=trade_meta.get("strength", 0.0),
+                    entry=entry, sl=sl, tp=final_tp,
+                    strategy=strategy,
+                )
                 self._real_positions[result["ticket"]] = {
-                    "sl": sl, "initial_sl": sl, "tp": final_tp, "entry": entry, "direction": direction,
-                    "symbol": symbol, "strategy": strategy,
-                    "entry_time": time.time(), "partial_closed": False
+                    "sl": sl, "initial_sl": sl, "tp": final_tp, "entry": entry,
+                    "direction": direction, "symbol": symbol, "strategy": strategy,
+                    "entry_time": time.time(),
+                    "partial_closed_1r": False,   # ← 3-Level TP Ladder flags
+                    "partial_closed_2r": False,
+                    "journal_id": j_id,
                 }
         else:
             result = {}
@@ -720,72 +872,109 @@ class AgniVBot:
         
         for ticket, meta in list(self._real_positions.items()):
             if ticket not in active_tickets:
-                # Position was closed (TP/SL hit or manually closed), stop tracking it
+                # Position was closed (TP/SL hit or manually closed)
                 info = self.mt5.get_closed_trade_info(ticket)
-                pnl = info.get("profit", 0.0)
-                
+                pnl  = info.get("profit", 0.0)
+
+                # Trade Journal — record close
+                j_id = meta.get("journal_id", "")
+                if j_id:
+                    self.journal.log_close(j_id, pnl, info.get("reason", "Exit"))
+
                 # Send Alert via Centralised Manager
                 self.alerts.trade_closed({
                     "ticket":      ticket,
-                    "symbol":      meta['symbol'],
+                    "symbol":      meta["symbol"],
                     "pnl":         pnl,
                     "exit_reason": info.get("reason", "Exit"),
                     "strategy":    meta.get("strategy", "N/A")
                 })
-                
-                # Update Risk Manager
+
+                # Update Risk Manager + handle cooldown Telegram alert
                 self.risk_mgr.update_after_trade(pnl)
-                
-                del self._real_positions[ticket] # type: ignore
+                stats = self.risk_mgr.stats()
+                if stats.get("cooldown_remaining_min", 0) > 0:
+                    self.alerts.risk_alert(
+                        f"⚡ Cooldown activated after {self.risk_mgr.cooldown_losses} losses! "
+                        f"Trading paused for {stats['cooldown_remaining_min']} min. "
+                        f"Will auto-resume."
+                    )
+
+                del self._real_positions[ticket]  # type: ignore
                 self._play_sound("exit")
                 continue
-                
+
             tick = self.mt5.get_tick(meta["symbol"])
             if not tick:
                 continue
-            # ── [NEW] Agni-V Pulse Guard Logic ───────────────────
-            entry_time = meta.get("entry_time", time.time())
+
+            current = tick.get("bid") if meta["direction"] == "BUY" else tick.get("ask")
+            if current is None:
+                continue
+
+            entry_time   = meta.get("entry_time", time.time())
             time_elapsed = time.time() - entry_time
-            is_scalp = meta.get("strategy") == STRATEGY_SCALP
-            
-            # 1. Time-Based Exit (TBE): If scalp is open > 20 mins, close remainder
+            is_scalp     = meta.get("strategy") == STRATEGY_SCALP
+
+            # ── 1. Time-Based Exit (TBE): scalp open > 20 mins → close ─────
             if is_scalp and time_elapsed > 1200:
-                logger.info(f"[Core] ⏱️ TBE: Scalp ticket #{ticket} open > 20 mins. Closing.")
+                logger.info(f"[Core] ⏱️ TBE: Scalp #{ticket} open >20 min. Closing.")
                 self.mt5.close_position(ticket)
                 continue
 
-            # 2. Risk Mgmt Trailing SL
-            be_threshold = 0.5 if is_scalp else None
-            should_move, new_sl = self.risk_mgr.should_update_sl(
-                meta["entry"], current, meta["sl"], meta.get("initial_sl", meta["sl"]), meta["direction"],
-                override_breakeven_r=be_threshold
-            )
-            
-            # 3. Partial Profit Taking (PPT): At 1.0R, close 50% & move to BE
+            # ── 2. 3-Level TP Ladder (Zignaly / 3Commas style) ───────────
             initial_risk = abs(meta["entry"] - meta.get("initial_sl", meta["sl"]))
-            profit_r = abs(current - meta["entry"]) / initial_risk if initial_risk > 0 else 0
-            
-            if is_scalp and profit_r >= 1.0 and not meta.get("partial_closed"):
-                # Move to BE first
-                move_ok = self.mt5.modify_sl_tp(ticket, meta["entry"], meta["tp"])
-                # Then close 50%
-                pos = self.mt5.positions_get(ticket=ticket)
-                if pos and len(pos) > 0:
-                    half_vol = round(pos[0].volume / 2.0, 2)
-                    if half_vol >= 0.01:
-                        close_ok = self.mt5.close_position(ticket, volume=half_vol)
-                        if close_ok:
-                            meta["partial_closed"] = True
-                            meta["sl"] = meta["entry"]
-                            logger.info(f"[Core] 💰 PPT: Closed 50% of scalp ticket #{ticket} at 1.0R.")
+            profit_r     = abs(current - meta["entry"]) / initial_risk if initial_risk > 0 else 0
+
+            pos = self.mt5.positions_get(ticket=ticket) if is_scalp else None
+            cur_vol = pos[0].volume if pos and len(pos) > 0 else 0
+
+            # Level 1: At 1R → close 30%, move SL to Break-Even
+            if is_scalp and profit_r >= 1.0 and not meta.get("partial_closed_1r") and cur_vol > 0:
+                close_vol = round(cur_vol * 0.30, 2)
+                if close_vol >= 0.01:
+                    ok = self.mt5.close_position(ticket, volume=close_vol)
+                    if ok:
+                        self.mt5.modify_sl_tp(ticket, meta["entry"], meta["tp"])  # → Break-Even
+                        meta["partial_closed_1r"] = True
+                        meta["sl"] = meta["entry"]
+                        logger.info(f"[Core] 🎯 TP-L1 (1R): Closed 30% of #{ticket} | SL → B/E")
                 continue
 
-            # Standard trailing if not already handled by PPT
+            # Level 2: At 2R → close another 30%, trail SL to 1R profit
+            if is_scalp and profit_r >= 2.0 and meta.get("partial_closed_1r") \
+                    and not meta.get("partial_closed_2r") and cur_vol > 0:
+                close_vol = round(cur_vol * 0.30, 2)
+                one_r_profit_sl = (
+                    meta["entry"] + initial_risk if meta["direction"] == "BUY"
+                    else meta["entry"] - initial_risk
+                )
+                if close_vol >= 0.01:
+                    ok = self.mt5.close_position(ticket, volume=close_vol)
+                    if ok:
+                        self.mt5.modify_sl_tp(ticket, one_r_profit_sl, meta["tp"])  # → Lock 1R
+                        meta["partial_closed_2r"] = True
+                        meta["sl"] = one_r_profit_sl
+                        logger.info(f"[Core] 🎯 TP-L2 (2R): Closed 30% of #{ticket} | SL → +1R locked")
+                continue
+
+            # Level 3: At 3R → let remaining 40% run with tight 0.5R trail
+            # (handled by trailing SL below with tighter threshold)
+
+            # ── 3. Trailing SL for the remaining position ────────────────
+            # Use tighter trail (0.5R) at L3 to lock in max profit
+            be_threshold  = 0.5 if (is_scalp and meta.get("partial_closed_2r")) else \
+                            (0.5 if is_scalp else None)
+            should_move, new_sl = self.risk_mgr.should_update_sl(
+                meta["entry"], current, meta["sl"],
+                meta.get("initial_sl", meta["sl"]), meta["direction"],
+                override_breakeven_r=be_threshold
+            )
             if should_move and new_sl != meta["sl"]:
                 ok = self.mt5.modify_sl_tp(ticket, new_sl, meta["tp"])
                 if ok:
                     self._real_positions[ticket]["sl"] = new_sl
-                    logger.info(f"[Core] 🔒 Trailing SL moved | Ticket={ticket} | NewSL={new_sl}")
+                    logger.info(f"[Core] 🔒 Trail SL moved | #{ticket} | NewSL={new_sl:.5f} | Profit={profit_r:.1f}R")
 
     # ── Helpers ───────────────────────────────────────────────
 
@@ -798,15 +987,7 @@ class AgniVBot:
         return {"balance": self.config.firm_balance, "equity": self.config.firm_balance}
 
     def _get_tick(self, symbol: str) -> dict:
-        if symbol == ASSETS_BTC:
-            tick = self.btc_binance.get_tick()
-            if tick and tick.get("price"):
-                return {
-                    "bid": tick["price"],
-                    "ask": tick["price"] * 1.0001,
-                    "last": tick["price"],
-                    "time": datetime.fromtimestamp(tick["ts"]/1000)
-                }
+
 
         if self.mt5.connected:
             return self.mt5.get_tick(symbol)
@@ -873,9 +1054,7 @@ class AgniVBot:
         open_pos = self._get_open_positions()
         # Surface last known prices from history cache for the dashboard
         history_info: dict = {}
-        target_syms = []
-        if self.config.assets in (ASSETS_XAUUSD, ASSETS_BOTH): target_syms.append(ASSETS_XAUUSD)
-        if self.config.assets in (ASSETS_BTC, ASSETS_BOTH): target_syms.append(ASSETS_BTC)
+        target_syms = [ASSETS_XAUUSD]
         
         for sym in target_syms:
             lc = self.history.get_last_close(sym, "H1")
@@ -903,20 +1082,9 @@ class AgniVBot:
 if __name__ == "__main__":
     import os
     
-    print("\n" + "="*50)
-    print("Which asset would you like to trade?")
-    print("[1] Gold (XAUUSD)\n[2] Bitcoin (BTCUSD)\n[3] Both (Default)")
-    choice = input("Enter 1, 2, or 3 (or press Enter for Both): ").strip()
-    
-    selected_assets = ASSETS_BOTH
-    if choice == "1":
-        selected_assets = ASSETS_XAUUSD
-    elif choice == "2":
-        selected_assets = ASSETS_BTC
-        
     cfg = BotConfig(
         mode         = os.getenv("BOT_MODE", MODE_DEMO),
-        assets       = selected_assets,
+        assets       = ASSETS_XAUUSD,
         strategy     = os.getenv("BOT_STRATEGY", STRATEGY_AUTO),
         risk_pct     = float(os.getenv("BOT_RISK_PCT", "1.0")),
         mt5_account  = int(os.getenv("MT5_ACCOUNT", "0")),
