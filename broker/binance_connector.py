@@ -16,7 +16,7 @@ logger = logging.getLogger("agniv.binance")
 class BinanceConnector:
     """
     Connects to Binance Public WebSocket Streams.
-    Stream: btc_usdt@ticker or btc_usdt@aggTrade
+    Stream: xau_usdt@ticker or xau_usdt@aggTrade
     """
 
     def __init__(self, symbol: str = "XAUUSDT"):
@@ -99,7 +99,7 @@ if __name__ == "__main__":
     try:
         for _ in range(10):
             time.sleep(2)
-            print(f"BTC Price: {connector.get_latest_price()}")
+            print(f"Price: {connector.get_latest_price()}")
     except KeyboardInterrupt:
         pass
     connector.stop()

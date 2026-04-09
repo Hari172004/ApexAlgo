@@ -103,7 +103,7 @@ if __name__ == "__main__":
     try:
         for _ in range(10):
             time.sleep(2)
-            print(f"Bybit BTC Price: {connector.get_latest_price()}")
+            print(f"Bybit Price: {connector.get_latest_price()}")
     except KeyboardInterrupt:
         pass
     connector.stop()
