@@ -32,12 +32,11 @@ logger = logging.getLogger("agniv.rl.train")
 
 SYMBOL_CSV_MAP = {
     "XAUUSD": os.path.join(ROOT, "data", "XAUUSD_D1_history.csv"),
-    "BTCUSD": os.path.join(ROOT, "data", "BTCUSD_D1_history.csv"),
 }
 
 DEFAULT_TIMESTEPS = {
     "XAUUSD": 300_000,    # Gold: longer training for more nuanced regime detection
-    "XAUUSD": 300_000,    # Gold: longer training for more nuanced regime detection
+}
 
 
 def load_data(symbol: str) -> pd.DataFrame:

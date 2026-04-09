@@ -134,6 +134,5 @@ class WAEFilter:
         }
 
 
-# Singleton instances
-btc_wae_filter  = WAEFilter(sensitivity=150, fast_ema=20, slow_ema=40)
-gold_wae_filter = WAEFilter(sensitivity=100, fast_ema=13, slow_ema=34)
+# Gold Singleton
+gold_wae_filter = WAEFilter(sensitivity=150, fast_ema=20, slow_ema=40)

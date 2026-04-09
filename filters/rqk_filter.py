@@ -129,6 +129,5 @@ class RQKFilter:
         }
 
 
-# Singleton instances
-btc_rqk_filter  = RQKFilter(lookback=8, rel_weight=8.0, start_bar=25, lag=2)
-gold_rqk_filter = RQKFilter(lookback=6, rel_weight=6.0, start_bar=20, lag=2)
+# Singleton instance for Gold
+gold_rqk_filter = RQKFilter(lookback=10, rel_weight=12.0, start_bar=20, lag=2)

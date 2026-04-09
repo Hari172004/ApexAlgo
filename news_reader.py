@@ -57,7 +57,7 @@ class NewsReader:
             return []
         try:
             params = {
-                "q":        "gold OR bitcoin OR forex OR FED OR inflation",
+                "q":        "gold OR forex OR FED OR inflation",
                 "language": "en",
                 "sortBy":   "publishedAt",
                 "pageSize": 30,

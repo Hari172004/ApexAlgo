@@ -327,7 +327,7 @@ function SettingsScreen() {
         <Card>
           <ToggleGroup label="Trading Mode" options={['DEMO', 'REAL', 'FUNDED']} value={mode} onChange={setMode} />
           <ToggleGroup label="Strategy Engine" options={['AUTO', 'SCALP', 'SWING']} value={strategy} onChange={setStrategy} />
-          <ToggleGroup label="Traded Assets" options={['BOTH', 'XAUUSD', 'BTCUSD']} value={assets} onChange={setAssets} />
+          <ToggleGroup label="Traded Assets" options={['BOTH', 'XAUUSD']} value={assets} onChange={setAssets} />
         </Card>
 
         <Card style={{marginTop: 16}}>
