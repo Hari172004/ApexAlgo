@@ -15,9 +15,9 @@ Agni-V has been entirely rebuilt into a hardened, high-performance XAUUSD tradin
 * **World Monitor API:** Scrapes geopolitical escalation events globally to pause trading.
 * **Anti-Martingale:** Halves the risk after maximum successive hits.
 * **Dynamic Spread Locks:** Cuts order transmission if broker raw spreads diverge > 20 points.
-* **Anti-Martingale Compounding Risk:** Dynamically grows position sizing as account balance grows. 
-    *   *$10 Nano/Micro Accounts fully supported via structured dynamic tiers.*
-    *   1.5x Reward-to-Risk ratio locked in for scalps, ensuring a ~40% win-rate breakeven mathematically.
+* **Anti-Martingale Compounding Risk:** Dynamically grows position sizing as account balance grows.
+  * *$10 Nano/Micro Accounts fully supported via structured dynamic tiers.*
+  * 1.5x Reward-to-Risk ratio locked in for scalps, ensuring a ~40% win-rate breakeven mathematically.
 * **Live Telegram Control center:** Subscribed users get automatic heartbeat reports, entry/exit pings, PnL updates, and live command executions.
 
 ---
