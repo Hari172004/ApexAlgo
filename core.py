@@ -281,7 +281,7 @@ class AgniVBot:
         
         # ── Safe Disconnect for All Components ───────────────────
         # Use getattr(self, 'attr', None) to avoid AttributeErrors if startup failed 
-        # or if specific assets (BTC/Gold) weren't initialized.
+        # or if specific assets weren't initialized.
         components_to_stop = [
             'ccxt', 'mt5', 'news'
         ]

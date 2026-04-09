@@ -60,7 +60,7 @@ if __name__ == "__main__":
     # Download Gold (2001+)
     download_history("XAUUSD", "D1", 2001)
     
-    # Download BTC (2015+)
+    # Download History Logic Complete
 
     
     mt5.shutdown() # type: ignore

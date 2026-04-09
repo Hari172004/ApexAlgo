@@ -1,7 +1,7 @@
 """
 backtester.py — Agni-V Backtrader Module
 =============================================
-Tests both Scalping and Swing strategies on historical XAUUSD and BTC data.
+Tests both Scalping and Swing strategies on historical XAUUSD data.
 Simulates funded account rules during backtesting.
 Reports: win rate, profit factor, max drawdown, Sharpe ratio, prop firm pass/fail.
 """
@@ -177,14 +177,12 @@ class SwingStrategy(bt.Strategy):
 
 def load_data(symbol: str, period: str = "2y", interval: str = "1h") -> bt.feeds.PandasData:
     """
-    symbol: 'GC=F' (XAUUSD) or 'BTC-USD'
+    symbol: 'GC=F' (XAUUSD)
     interval: '5m', '1h', '1d'
     """
     ticker_map = {
         "XAUUSD": "GC=F",
-        "BTCUSD": "BTC-USD",
         "GC=F":   "GC=F",
-        "BTC-USD":"BTC-USD",
     }
     yf_symbol = ticker_map.get(symbol, symbol)
     logger.info(f"[Backtest] Downloading {yf_symbol} | Period={period} | Interval={interval}")
@@ -299,7 +297,7 @@ def run_backtest(symbol: str = "XAUUSD",
 
 if __name__ == "__main__":
     import json
-    for sym in ["XAUUSD", "BTCUSD"]:
+    for sym in ["XAUUSD"]:
         for strat in ["scalp", "swing"]:
             result = run_backtest(symbol=sym, strategy_name=strat, period="2y", interval="1h")
             print(json.dumps(result, indent=2))

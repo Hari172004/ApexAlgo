@@ -140,7 +140,7 @@ def main():
         saved_params["scalping"] = clean_scalp # type: ignore
 
     # --- 2. Optimize Swing ---
-    swing_data = fetch_data("BTC-USD", "1h", "60d") # 60 days of 1h data
+    swing_data = fetch_data("GC=F", "1h", "60d") # 60 days of 1h data
     swing_grid = {
         "ema_trend": [50, 100],         # 50, 100
         "ema_fast": range(15, 26, 5),   # 15, 20, 25

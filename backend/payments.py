@@ -4,7 +4,7 @@ payments.py — Stripe Subscription Integration for Agni-V
 Handles: checkout session creation, webhook processing, license generation.
 Plans:
   STARTER  — $29/month — XAUUSD only, Demo + Real
-  PRO      — $59/month — XAUUSD + BTC, Demo + Real + Funded
+  PRO      — $59/month — XAUUSD, Demo + Real + Funded
   ELITE    — $99/month — Everything + priority signals
 """
 
