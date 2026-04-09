@@ -1,3 +1,4 @@
+"""
 binance_connector.py — Binance WebSocket Client for XAU/USDT
 =======================================================
 Provides real-time price, volume, and trade updates for Gold.
